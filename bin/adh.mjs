@@ -34,6 +34,27 @@ import {
   registerCodexMcp,
 } from "../src/install/index.mjs";
 
+if (process.argv[2] === "team") {
+  try {
+    const { runTeamCli } = await import("../src/team/cli.mjs");
+    await runTeamCli(process.argv.slice(3));
+  } catch (error) {
+    console.log(
+      JSON.stringify({
+        ok: false,
+        error: {
+          code: error instanceof HubError ? error.code : "team-command-failed",
+          message:
+            error instanceof HubError
+              ? error.message
+              : "Team operation failed. Check configuration, credentials and the durable message receipt.",
+        },
+      }),
+    );
+    process.exitCode = 1;
+  }
+  process.exit(process.exitCode ?? 0);
+}
 const strings = [
   "home",
   "target",
@@ -140,7 +161,7 @@ async function register() {
 }
 const help = {
   name: "agent-dispatch-hub",
-  version: "0.2.1",
+  version: "0.4.0",
   usage: "node bin/adh.mjs <command> [options]",
   commands: {
     doctor: "Inspect local readiness without dispatch or remote contact",
@@ -170,6 +191,7 @@ const help = {
     receipt:
       "--job job-...: read the controller receipt, including retained backend completion after placement drift",
     status: "[--target office]",
+    team: "team --help: independent DSH-to-Codex advisor inbox, setup and scheduler",
     dispatch:
       '--target office --workspace demo --text "task" [--timeout-ms 55000 --max-questions 5]',
     send: '--job job-... --text "follow-up"',
@@ -235,7 +257,7 @@ async function main() {
       targets = { ready: false, code: error.code ?? "invalid-config" };
     }
     print({
-      version: "0.2.1",
+      version: "0.4.0",
       node: process.version,
       nodeSupported: Number(process.versions.node.split(".")[0]) >= 22,
       git,

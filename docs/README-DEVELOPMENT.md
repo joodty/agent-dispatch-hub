@@ -1,5 +1,7 @@
 # 开发说明
 
+独立消息、成员和调度放在 `src/team`，不塞进派工 `Hub`。维护前读 [消息工程结构](MESSAGING-DESIGN.md)，入口和真实边界见 [使用说明](README-MESSAGING.md)。新执行端通过适配器注入，存储只暴露同步短事务，不包含网络等待或模型调用。
+
 
 [任务内提问](README-QUESTIONS.md) 由 Hub 控制：`questions.mjs` 生成和验证回复格式，`decisions.mjs` 从原请求的最终消息中识别并保存问题，`Hub.answer` 持久化答案后沿原会话提交。目标端不增加 HTTP 接口。原始 `backendResult.completed` 表示这一轮完成，用户看到的 `result.completed:false` 表示问题尚待处理。
 
