@@ -8,6 +8,7 @@ import {
   readFile,
   symlink,
   readdir,
+  realpath,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,7 +16,9 @@ import { PlacementService } from "../packages/dsh-companion/lib/service.mjs";
 import { planPlacement } from "../packages/dsh-companion/lib/placement.mjs";
 const id = (n) => `job-00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 async function fixture(t, { workspaceExists = true } = {}) {
-  const base = await mkdtemp(path.join(tmpdir(), "adh-placement-"));
+  // Native DSH workspace records are canonical. Windows runners may expose
+  // their temp directory through a short-name alias, so model that contract.
+  const base = await realpath(await mkdtemp(path.join(tmpdir(), "adh-placement-")));
   t.after(() => rm(base, { recursive: true, force: true }));
   const group = path.join(base, "group"),
     root = path.join(group, "tasks"),
@@ -290,4 +293,15 @@ test("partial admission persists its known session; retries never create or move
     code: "admission-incomplete",
   });
   assert.equal(f.calls.filter((c) => c === "session").length, 1);
+});
+
+test("configured directory aliases retain their requested spelling and report canonical effective cwd",async t=>{
+  const f=await fixture(t);
+  const alias=path.join(f.base,"task-alias");
+  await symlink(f.root,alias,process.platform==="win32"?"junction":"dir");
+  const m=structuredClone(f.mapping);m.execution.root=alias;
+  const plan=f.plan(1,m);const admitted=await f.service.prepare({jobId:id(1),plan});
+  assert.equal(admitted.context.execution.requestedCwd,plan.execution.requestedCwd);
+  assert.equal(admitted.context.execution.actualCwd,path.join(f.root,path.basename(plan.execution.requestedCwd)));
+  await f.service.verify({jobId:id(1),sessionId:admitted.sessionId});
 });
