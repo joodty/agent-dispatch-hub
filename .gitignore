@@ -1,0 +1,8 @@
+node_modules/
+.adh/
+coverage/
+*.tgz
+*.log
+.env
+*.local.json
+credentials/

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "sources": {
+    "bridge": {
+      "url": "https://github.com/joodty/codex-dsh-bridge.git",
+      "commit": "b2ea79e5a3b661ebe5a48a4892b1af6238f98d5b",
+      "upstream": "https://github.com/knottttt/codex-dsh-bridge",
+      "license": "NOASSERTION"
+    },
+    "sync": {
+      "url": "https://github.com/joodty/dsh-codex-sync.git",
+      "commit": "09b3d29cdc77f9e47be385ef9bf361eb947ee838",
+      "upstream": "https://github.com/Walvez/dsh-codex-sync",
+      "license": "MIT"
+    }
+  }
+}

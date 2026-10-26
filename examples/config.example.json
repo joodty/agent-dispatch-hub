@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "defaultTarget": "office",
+  "targets": {
+    "office": {
+      "adapter": "dsh",
+      "connection": {
+        "kind": "local",
+        "connectionFile": "/absolute/dsh-home/.codex-dsh-bridge/connection.json"
+      },
+      "workspaces": {
+        "demo": "/absolute/local/project"
+      }
+    },
+    "home": {
+      "adapter": "dsh",
+      "connection": {
+        "kind": "remote",
+        "baseUrl": "https://dsh.example.com",
+        "credentialFile": "/absolute/user-state/credentials/home.json"
+      },
+      "workspaces": {
+        "demo": "/absolute/path/on/remote/machine"
+      }
+    }
+  }
+}
