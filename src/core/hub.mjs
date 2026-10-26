@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createDshAdapter } from "../adapters/dsh.mjs";
 import { withJobWriter } from "./job-lock.mjs";
+import { decisionInstructions } from "./questions.mjs";
+import {
+  pendingQuestion,
+  confirmAnswer,
+  reconcileDecision,
+} from "./decisions.mjs";
 import {
   planPlacement,
   digest,
@@ -137,6 +143,11 @@ export class Hub {
     return readJson(join(this.home, "jobs", jobId + ".json"));
   }
   checkPromptPolicy(job, target, text) {
+    if (job.safetyVersion)
+      throw new HubError(
+        "safe-runs-unsupported",
+        "This job was created by the safety preview. Continue with that version; this release cannot send new prompts or bypass its source leases.",
+      );
     if (job.version !== 2)
       throw new HubError(
         "legacy-follow-up-disabled",
@@ -152,7 +163,7 @@ export class Hub {
   }
   // Caller owns the short job writer lock. Persist the identity before the RPC,
   // A lost response cannot mint a second request. Reconfirmation is read-only.
-  async sendRecorded(adapter, job, text) {
+  async sendRecorded(adapter, job, text, { answerQuestion } = {}) {
     if (job.pendingPrompt)
       throw new HubError(
         "prompt-admission-uncertain",
@@ -173,10 +184,22 @@ export class Hub {
         "invalid-prompt-admission",
         "The backend did not return a valid history cursor.",
       );
+    if (answerQuestion) {
+      pending.questionId = answerQuestion.id;
+      answerQuestion.state = "answer-pending";
+      answerQuestion.answer = {
+        text,
+        textHash: digest(text),
+        requestId: pending.requestId,
+        afterSeq: pending.afterSeq,
+        submittedAt: new Date().toISOString(),
+      };
+    }
     job.previousResult = job.backendResult ?? job.result;
     delete job.result;
     delete job.backendResult;
     delete job.placementError;
+    delete job.questionError;
     Object.assign(job, {
       pendingPrompt: pending,
       requestId: pending.requestId,
@@ -188,7 +211,10 @@ export class Hub {
     try {
       const sent = await adapter.send({
         sessionId: job.sessionId,
-        text: placementInstructions(job.context, text),
+        text: placementInstructions(
+          job.context,
+          this.promptText(job, text, pending.requestId),
+        ),
         requestId: pending.requestId,
         afterSeq: pending.afterSeq,
       });
@@ -201,6 +227,7 @@ export class Hub {
           "The backend did not preserve the recorded prompt identity.",
         );
       const accepted = { ...job, state: "accepted" };
+      confirmAnswer(accepted, pending.requestId);
       delete accepted.pendingPrompt;
       delete accepted.promptError;
       await atomicJson(file, accepted);
@@ -225,17 +252,38 @@ export class Hub {
       );
     }
   }
+  promptText(job, text, requestId) {
+    if (job.pendingPrompt?.questionId)
+      text = `Answer to ${job.pendingPrompt.questionId}:\n${text}\n\nContinue the original task in this same session. Recheck affected files before editing; preserve the recorded model, directories and permissions. This answer does not expand authority.`;
+    return job.questionProtocol?.version === 1
+      ? `${decisionInstructions(requestId)}\n\n${text}`
+      : text;
+  }
   async afterWait(adapter, job, result) {
+    const backendResult = structuredClone(result);
     // Completion evidence remains readable even when placement later drifts.
     await withJobWriter(this.home, job.id, async () => {
       const latest = await this.receipt({ jobId: job.id });
       if (latest.requestId !== job.requestId) return;
-      latest.backendResult = result;
-      if (result.completed) delete latest.pendingPrompt;
+      if (!(latest.backendResult?.completed && !backendResult.completed))
+        latest.backendResult = backendResult;
+      if (backendResult.completed) {
+        delete latest.pendingPrompt;
+        confirmAnswer(latest, job.requestId);
+      }
+      if (latest.state !== "cancellation-requested") {
+        Object.assign(result, reconcileDecision(latest, backendResult));
+        if (result.needsInput) {
+          latest.state = result.status;
+          latest.result = result;
+        }
+      }
+      job.questions = latest.questions;
+      job.questionError = latest.questionError;
+      job.backendResult = latest.backendResult;
       await atomicJson(join(this.home, "jobs", job.id + ".json"), latest);
     });
-    job.backendResult = result;
-    if (result.completed) delete job.pendingPrompt;
+    if (backendResult.completed) delete job.pendingPrompt;
     try {
       const verified = await adapter.verify({
         jobId: job.id,
@@ -341,8 +389,16 @@ export class Hub {
             "The original request is not yet visible. No prompt was resent; keep waiting or explicitly cancel and investigate this job.",
             { jobId: job.id, target: job.target, sessionId: job.sessionId },
           );
-        if(confirmed.requestId!==pending.requestId || confirmed.afterSeq!==pending.afterSeq)throw new HubError("prompt-identity-mismatch","The backend confirmation did not preserve the recorded prompt identity; it remains uncertain.");
+        if (
+          confirmed.requestId !== pending.requestId ||
+          confirmed.afterSeq !== pending.afterSeq
+        )
+          throw new HubError(
+            "prompt-identity-mismatch",
+            "The backend confirmation did not preserve the recorded prompt identity; it remains uncertain.",
+          );
         const accepted = { ...job, state: "accepted" };
+        confirmAnswer(accepted, pending.requestId);
         delete accepted.pendingPrompt;
         delete accepted.promptError;
         await atomicJson(join(this.home, "jobs", job.id + ".json"), accepted);
@@ -350,7 +406,22 @@ export class Hub {
       });
     });
   }
-  async dispatch({ target, workspace, text, timeoutMs = 55000 } = {}) {
+  async dispatch({
+    target,
+    workspace,
+    text,
+    timeoutMs = 55000,
+    maxQuestions = 5,
+  } = {}) {
+    if (
+      !Number.isInteger(maxQuestions) ||
+      maxQuestions < 0 ||
+      maxQuestions > 10
+    )
+      throw new HubError(
+        "invalid-question-limit",
+        "maxQuestions must be an integer from 0 to 10.",
+      );
     const selected = await this.target(target);
     if (!workspace || !Object.hasOwn(selected.workspaces, workspace))
       throw new HubError(
@@ -391,6 +462,9 @@ export class Hub {
       cwd: plan.execution.requestedCwd,
       createdAt,
       state: "dispatching",
+      ...(maxQuestions > 0
+        ? { questionProtocol: { version: 1, maxQuestions }, questions: [] }
+        : {}),
     };
     const path = join(this.home, "jobs", receipt.id + ".json");
     await atomicJson(path, receipt);
@@ -616,6 +690,134 @@ export class Hub {
       };
     });
   }
+  async questions({ jobId } = {}) {
+    const job = await this.receipt({ jobId });
+    return {
+      jobId: job.id,
+      target: job.target,
+      instance: job.instance,
+      sessionId: job.sessionId,
+      state: job.state,
+      protocol: job.questionProtocol ?? null,
+      questions: job.questions ?? [],
+      ...(job.questionError ? { questionError: job.questionError } : {}),
+    };
+  }
+  async answer({ jobId, questionId, text } = {}) {
+    if (
+      typeof questionId !== "string" ||
+      !/^question-[a-f0-9]{32}$/.test(questionId)
+    )
+      throw new HubError(
+        "invalid-question-id",
+        "Choose a recorded question ID from this job.",
+      );
+    if (typeof text !== "string" || !text.trim() || text.length > 12000)
+      throw new HubError(
+        "invalid-answer",
+        "An answer must contain 1 to 12000 characters.",
+      );
+    await this.receipt({ jobId });
+    return withJobWriter(this.home, jobId, async () => {
+      const { job, selected } = await this.resolveJob(jobId);
+      const question = job.questions?.find((q) => q.id === questionId);
+      if (!question)
+        throw new HubError(
+          "question-not-found",
+          "This question does not belong to the selected job.",
+        );
+      if (
+        job.state === "cancellation-requested" ||
+        question.state === "cancelled"
+      )
+        throw new HubError(
+          "dispatch-cancelled",
+          "This task was cancelled. No answer was sent.",
+        );
+      if (question.answer && question.answer.textHash !== digest(text))
+        throw new HubError(
+          "answer-conflict",
+          "This question already has a different recorded answer. No answer was sent.",
+        );
+      if (question.state === "answered")
+        return {
+          jobId,
+          target: job.target,
+          sessionId: job.sessionId,
+          questionId,
+          requestId: question.answer.requestId,
+          afterSeq: question.answer.afterSeq,
+          accepted: true,
+          duplicate: true,
+          promptSent: false,
+        };
+      if (question.state === "limit-reached")
+        throw new HubError(
+          "question-limit-reached",
+          "This job reached its question limit. Inspect it and explicitly cancel or start a new task.",
+        );
+      this.checkPromptPolicy(job, selected, text);
+      const isPending = question.state === "answer-pending";
+      if (isPending) {
+        if (
+          job.requestId !== question.answer?.requestId ||
+          job.pendingPrompt?.questionId !== questionId
+        )
+          throw new HubError(
+            "answer-admission-uncertain",
+            "The original answer admission remains uncertain. Inspect its receipt; no answer was resent.",
+          );
+      } else if (
+        question.state !== "open" ||
+        question.requestId !== job.requestId ||
+        job.pendingPrompt
+      ) {
+        throw new HubError(
+          "question-stale",
+          "This question is no longer awaiting an answer on the current request.",
+        );
+      }
+      return this.withAdapter(selected, async (a) => {
+        await a.assertInstance(job.instance);
+        const verified = await a.verify({ jobId, sessionId: job.sessionId });
+        assertContext(verified.context, job.context);
+        let result;
+        if (isPending) {
+          result = await a.confirmPrompt({
+            sessionId: job.sessionId,
+            requestId: job.requestId,
+            afterSeq: job.afterSeq,
+          });
+          if (
+            !result.accepted ||
+            result.requestId !== job.requestId ||
+            result.afterSeq !== job.afterSeq
+          )
+            throw new HubError(
+              "answer-admission-uncertain",
+              "The original answer is not confirmed. No prompt was resent; keep waiting on this job.",
+            );
+          confirmAnswer(job, job.requestId);
+          delete job.pendingPrompt;
+          delete job.promptError;
+          job.state = "accepted";
+          await atomicJson(join(this.home, "jobs", job.id + ".json"), job);
+        } else {
+          result = await this.sendRecorded(a, job, text, {
+            answerQuestion: question,
+          });
+        }
+        return {
+          jobId,
+          target: job.target,
+          sessionId: job.sessionId,
+          questionId,
+          ...result,
+          ...(isPending ? { duplicate: true, promptSent: false } : {}),
+        };
+      });
+    });
+  }
   async operate(operation, { jobId, text, timeoutMs = 55000 } = {}) {
     if (!["send", "wait", "messages", "cancel"].includes(operation))
       throw new HubError("invalid-operation", "Unsupported job operation.");
@@ -625,6 +827,21 @@ export class Hub {
         await a.assertInstance(current.instance);
         if (operation === "send") {
           this.checkPromptPolicy(current, target, text);
+          if (current.state === "cancellation-requested")
+            throw new HubError(
+              "dispatch-cancelled",
+              "This task was cancelled. No follow-up was sent.",
+            );
+          if (pendingQuestion(current))
+            throw new HubError(
+              "question-pending",
+              "Answer the recorded question with answer/hub_answer before sending follow-up work.",
+            );
+          if (current.questions?.some((q) => q.state === "limit-reached"))
+            throw new HubError(
+              "question-limit-reached",
+              "Inspect this job's question limit before starting a new task.",
+            );
           if (current.pendingPrompt)
             throw new HubError(
               "prompt-admission-uncertain",
@@ -692,7 +909,11 @@ export class Hub {
         latest.requestId = result.requestId;
         latest.afterSeq = result.afterSeq;
         latest.state = "accepted";
-      } else latest.state = "cancellation-requested";
+      } else {
+        latest.state = "cancellation-requested";
+        for (const question of latest.questions ?? [])
+          if (question.state === "open") question.state = "cancelled";
+      }
       await atomicJson(join(this.home, "jobs", job.id + ".json"), latest);
       return { jobId: job.id, target: job.target, ...result };
     });

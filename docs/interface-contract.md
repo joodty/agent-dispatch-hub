@@ -39,6 +39,22 @@ is read-only and does not resume a session.
 
 MCP: `hub_targets`, `hub_status`, `hub_inspect`, `hub_dispatch`, `hub_send`,
 `hub_wait`, `hub_messages`, `hub_cancel`, `hub_verify`, `hub_artifact`.
+
+The controller also exposes `hub_questions({jobId})` (local, read-only) and
+`hub_answer({jobId,questionId,text})` (submits one answer, then use `hub_wait`).
+New dispatches freeze `questionProtocol:{version:1,maxQuestions}` and a bounded
+`questions` ledger; maxQuestions defaults to 5, accepts 0–10, and 0 disables it.
+Old receipts are not enrolled. A strict current-request final reply becomes
+`status:"needs_input",completed:false,turnCompleted:true,needsInput:true,question`.
+Its original completed turn remains in `backendResult`. Question states are `open`, `answer-pending`,
+`answered`, `cancelled`, `limit-reached`. Question IDs derive from job/request.
+Answers and their identity/hash are persisted before submission. Repeating the
+same answer returns its original admission or confirms it without resending;
+different answers conflict. Pending questions block ordinary sends; cancelled
+jobs cannot be resumed. Limits return `question_limit_reached`, malformed
+envelopes `question_error`. No target API, model selection, or desktop wakeup is
+added. Protocol, sizes and lock semantics: [task questions](README-QUESTIONS.md).
+
 Recovery tools: `hub_recover`, `hub_retry`, `hub_receipt`. Prompt IDs/cursors are
 persisted before admission, and the adapter must preserve both. An uncertain
 prompt blocks new sends; `retry` requires identical text and confirms the original

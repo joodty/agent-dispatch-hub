@@ -96,6 +96,14 @@ node scripts/call-tool.mjs hub_dispatch <任务参数JSON文件>
 
 长任务书可使用 CLI 的 `--text-file "<任务书文件路径>"`，替代 `--text`。验收结束引用发布验证记录，并报告本次安装自己的结果，不能沿用作者机器的结果。
 
+## 执行中处理 DSH 的问题
+
+新任务默认启用 [任务内提问](docs/README-QUESTIONS.md)，每个任务最多 5 次；派工参数 `maxQuestions` 可设为 0–10，0 关闭。发现 `needs_input` 后读取 `question`，按已有授权作出决策；超出授权时先问用户。调用 `hub_answer({jobId,questionId,text})` 后继续 `hub_wait`，不要新建会话或用普通 `hub_send` 跳过问题。
+
+`hub_questions` 读取已保存的问题和答案，不会唤醒模型。尚未刷新原生工具时，仍可通过 `scripts/call-tool.mjs hub_answer <回答参数JSON文件>` 调用同一 MCP。原生列表刷新需重新加载 MCP，不要求重装 DSH 插件。
+
+相同问题、相同答案的重复调用不会再次发送；响应丢失时保留原 ID，重复 `answer` 只核对原提交，不生成第二个请求。不能把 `turnCompleted:true` 当成整个任务完成。旧任务不自动启用协议，也没有后台自动唤醒空闲主会话的功能。
+
 ## 4. 交付给使用者
 
 报告实际运行版本、目标/工作区别名、诊断结果、真实验收结果和产物位置。说明哪些步骤只用了模拟测试，哪些步骤连接了真实 DSH；若登录、凭据或远程路径仍缺失，准确列出所缺信息。不要输出受保护文件内容。

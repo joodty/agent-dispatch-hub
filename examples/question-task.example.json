@@ -1,0 +1,7 @@
+{
+  "target": "<target-name>",
+  "workspace": "<workspace-alias>",
+  "text": "<任务目标、实际源码路径、读写边界和验收条件。关键歧义或缺少必要信息时，按 Hub 提问协议向负责人求助。>",
+  "maxQuestions": 5,
+  "timeoutMs": 55000
+}
