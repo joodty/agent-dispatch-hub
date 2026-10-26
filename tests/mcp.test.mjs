@@ -34,7 +34,7 @@ test("one generic MCP surface routes requests and returns recoverable failures w
     await server.close();
   });
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 15);
+  assert.equal(listed.tools.length, 20);
   assert.ok(listed.tools.every((tool) => tool.name.startsWith("hub_")));
   assert.equal(
     listed.tools.find((t) => t.name === "hub_questions").annotations

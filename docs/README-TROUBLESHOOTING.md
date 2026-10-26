@@ -1,5 +1,7 @@
 # 故障排查
 
+独立顾问通道先用 `team members`、`team receipt --message <id>` 核对状态，再按 [消息说明](README-MESSAGING.md) 处理。消息入队与模型启动分开；未知准入不能直接再启动一轮，`recover` 只读核对旧调用。`budget-exhausted` 由本机负责人明确调整预算，成员凭据不能自行加额。`team-target-changed` / `team-session-changed` 要恢复原实例、映射与目录，不改投其他会话。原生消息插件已安装但无连接时，核对选定 profile 的受保护目录册和服务是否运行，不复制凭据到聊天中。
+
 先运行 `node bin/adh.mjs doctor`，再对用户想使用的目标运行 `status --target <目标名>`。保留脱敏后的错误、版本与目标名称即可；不要粘贴 connection file、凭据文件或认证 URL 全文。
 
 | 现象 | 处理顺序 |

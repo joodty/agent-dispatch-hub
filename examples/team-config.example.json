@@ -1,0 +1,19 @@
+{
+  "project": {
+    "id": "demo-project",
+    "title": "Project advisor",
+    "root": "<controller-local-project-absolute-path>",
+    "maxAdvisorCalls": 20,
+    "timeoutMs": 120000
+  },
+  "advisor": {
+    "id": "demo-codex",
+    "command": "<controller-local-codex-executable-absolute-path>"
+  },
+  "dsh": {
+    "id": "demo-dsh",
+    "target": "<configured-target-name>",
+    "workspace": "<mapped-workspace-alias>",
+    "sessionRoots": ["<allowed-absolute-session-root-on-the-DSH-machine>"]
+  }
+}

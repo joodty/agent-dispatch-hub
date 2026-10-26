@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { dependencyPath } from "../core/dependencies.mjs";
 import { readJson, HubError } from "../core/state.mjs";
+import { randomUUID } from "node:crypto";
 
 export async function createDshAdapter(
   target,
@@ -79,6 +80,39 @@ export async function createDshAdapter(
     env,
     configPath: join(home, "targets", target.name, "bridge-settings.json"),
   });
+  const pluginOperation = async (method, args) => {
+    if (connection.kind !== "local" || !client.localAuth)
+      throw new HubError(
+        "local-install-required",
+        "Plugin installation requires an explicitly selected local DSH instance.",
+      );
+    const rpcId = randomUUID();
+    const response = await fetchImpl(
+      new URL(`/api/pluginManager/${method}`, client.baseUrl),
+      {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(60000),
+        headers: {
+          "content-type": "application/json",
+          ...(await client.localAuth.headers()),
+        },
+        body: JSON.stringify({
+          type: "client-request",
+          rpcId,
+          method: `pluginManager/${method}`,
+          payload: { args },
+        }),
+      },
+    );
+    const body = await response.json();
+    if (!response.ok || body.rpcId !== rpcId || body.result?.ok !== true)
+      throw new HubError(
+        "plugin-operation-failed",
+        "The selected DSH rejected plugin management. Inspect it without retrying installation blindly.",
+      );
+    return body.result.value;
+  };
   const control = async (
     operation,
     params = {},
@@ -153,6 +187,12 @@ export async function createDshAdapter(
     return body.value;
   };
   return {
+    messagingPlugins: () => pluginOperation("listPlugins", {}),
+    installMessaging: ({ spec, requestId }) =>
+      pluginOperation("installBundle", {
+        spec,
+        options: { enabled: true, saveExact: true, requestId },
+      }),
     status: () => client.describe(),
     dispatch: (args) => client.dispatch(args),
     inspect: () => control("inspect", {}, null),
@@ -172,6 +212,43 @@ export async function createDshAdapter(
     prepare: (args) => control("prepare", args),
     verify: (args) => control("verify", args),
     observeLegacy: (args) => control("observeLegacy", args),
+    conversation: async ({ sessionId }) => {
+      const context = await control("observeLegacy", { sessionId });
+      const history = await client.getMessages({ sessionId, maxMessages: 1 });
+      const sessions = await client.listSessions();
+      const session = sessions.find((s) => s.sessionId === sessionId);
+      if (!session)
+        throw new HubError(
+          "session-unavailable",
+          "The original DSH session is unavailable.",
+        );
+      if (
+        typeof session.running !== "boolean" ||
+        !Number.isSafeInteger(history.latestSeq)
+      )
+        throw new HubError(
+          "session-state-unavailable",
+          "DSH did not provide a verifiable running state and history cursor.",
+        );
+      const inbox = history.projections?.values?.inbox;
+      if (
+        !inbox ||
+        !Array.isArray(inbox["next-turn"]) ||
+        !Array.isArray(inbox["next-step"])
+      )
+        throw new HubError(
+          "session-state-unavailable",
+          "Cannot verify the original DSH inbox.",
+        );
+      return {
+        ...context,
+        running: session.running,
+        inboxPending:
+          Object.values(inbox).some((v) => v.length > 0) ||
+          (history.projections?.values?.userQuestions?.active?.length ?? 0) > 0,
+        latestSeq: history.latestSeq,
+      };
+    },
     cursor: async ({ sessionId }) => ({
       afterSeq: (await client.getMessages({ sessionId, maxMessages: 1 }))
         .latestSeq,

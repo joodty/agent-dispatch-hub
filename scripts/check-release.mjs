@@ -77,7 +77,7 @@ const SOURCE_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 
 /** 允许出现在仓库文本中的公开或占位主机；其余外部主机视为私人端点。 */
 const ALLOWED_HOSTS = new Set([
-  'github.com', 'npmjs.org', 'npmjs.com', 'nodejs.org', 'example.com', 'example.org',
+  'github.com', 'npmjs.org', 'npmjs.com', 'nodejs.org', 'learn.chatgpt.com', 'example.com', 'example.org',
   'example.net', 'example.edu', 'example.io', 'test.com', 'localhost', '127.0.0.1',
   '::1', '0.0.0.0', 'w3.org', 'spdx.org', 'opensource.org', 'choosealicense.com',
   'fsf.org', 'gnu.org', 'unicode.org',

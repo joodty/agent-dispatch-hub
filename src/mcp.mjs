@@ -3,15 +3,63 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { Hub } from "./core/hub.mjs";
 import { HubError } from "./core/state.mjs";
+import { TeamService } from "./team/service.mjs";
+import { TeamScheduler } from "./team/scheduler.mjs";
 
-export function createMcpServer({ home, hub = new Hub({ home }) }) {
+export function createMcpServer({ home, hub = new Hub({ home }), team }) {
+  let teamService;
+  const teams = () => team ?? (teamService ??= new TeamService({ home, hub }));
   const server = new McpServer({
     name: "agent-dispatch-hub",
-    version: "0.2.1",
+    version: "0.4.0",
   });
   const timeout = z.number().int().min(1000).max(300000).optional();
   const target = z.string().optional();
   const definitions = [
+    [
+      "hub_team_members",
+      "Read configured team projects and members without credentials; no model call.",
+      {},
+      () => teams().members(),
+      true,
+    ],
+    [
+      "hub_message_send",
+      "Store an independent question from a configured DSH member/session to its dedicated Codex advisor; no prior Hub job required. Use a stable requestId. A running team scheduler handles it; storing a message alone does not start a model.",
+      {
+        from: z.string(),
+        sessionId: z.string(),
+        requestId: z.string().min(1).max(128),
+        body: z.object({
+          question: z.string().min(1).max(3000),
+          context: z.string().max(8000).optional(),
+          files: z.array(z.string()).max(10).optional(),
+        }),
+      },
+      (args) => teams().send(args),
+      false,
+    ],
+    [
+      "hub_message_receipt",
+      "Read an independent message's durable processing and original-session reply admission. delivered means queued, not DSH execution completed.",
+      { messageId: z.string() },
+      (args) => teams().receipt(args),
+      true,
+    ],
+    [
+      "hub_message_run_once",
+      "Process one queued advisor request or pending reply within its project budget. May start one dedicated Codex model turn; never contacts a user's active chat.",
+      {},
+      () => new TeamScheduler({ service: teams() }).tick(),
+      false,
+    ],
+    [
+      "hub_message_recover",
+      "Reconcile an uncertain advisor turn or DSH reply by original IDs without starting a new model request or resending a reply.",
+      { messageId: z.string() },
+      (args) => new TeamScheduler({ service: teams() }).recover(args),
+      false,
+    ],
     [
       "hub_recover",
       "Recover an uncertain placement using the original job ID and frozen plan; sends no model prompt",

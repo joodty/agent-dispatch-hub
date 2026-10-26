@@ -1,5 +1,15 @@
 # Placement and routing contract, v0.2
 
+Independent team messages in v0.4 use a separate `TeamService`, store and scheduler;
+they do not require or create a dispatch job. Owner MCP tools are
+`hub_team_members`, `hub_message_send`, `hub_message_receipt`,
+`hub_message_run_once`, `hub_message_recover`. Member HTTP is authenticated
+`POST /team/v1/messages`, limited to `send` and `read` for that credential's
+member. Native DSH tools derive session identity from the calling agent. Project
+configuration, enabling and budget changes are owner CLI operations only.
+`delivered` means original-session queue admission, never downstream completion.
+States and recovery ordering: [messaging design](MESSAGING-DESIGN.md).
+
 CLI and MCP share `Hub`, the job store and adapter registry. Connections and
 credentials retain their v1 transport shape. New dispatch requires an explicit
 instance binding and a v2 mapping; [v1](interface-contract-v1.md) remains readable

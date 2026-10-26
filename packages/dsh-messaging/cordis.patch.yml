@@ -1,0 +1,3 @@
+- insert:
+    - id: agent-dispatch-hub-messaging
+      name: agent-dispatch-hub-messaging

@@ -1,0 +1,10 @@
+{
+  "from": "demo-dsh",
+  "sessionId": "session-<existing-session-uuid>",
+  "requestId": "design-question-001",
+  "body": {
+    "question": "<specific question for the project advisor>",
+    "context": "<goal, constraints and approaches already tried>",
+    "files": ["src/example.mjs"]
+  }
+}
