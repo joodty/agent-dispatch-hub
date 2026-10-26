@@ -4,6 +4,10 @@
 
 | 现象 | 处理顺序 |
 | --- | --- |
+| `prompt-admission-uncertain` | 不要重新派发；先用原 job ID 等待，或用 `retry --job <id> --text-file <原任务文件>` 只读核对原 request ID。未见请求仍报待确认，不再次发送；不同文本不能当作核对原请求。 |
+| 准备超时且回执没有 session ID | 使用 `recover --job <id>` 重放原计划，不生成新 job ID；恢复只确认会话，不发模型提示。 |
+| 任务已完成但目录校验失败 | 用 `receipt --job <id>` 读取保留的 `backendResult` 与 `placementError`，先核对环境，不绕过归属继续发任务。 |
+| 插件已安装但仍提示缺失 | 查选定 profile 的插件加载状态及日志；损坏托管记录会拒绝加载。不要删除状态目录、轮换实例身份或反复重装来掩盖问题。 |
 | `migration-required` | 旧路径别名缺少实例/归属/执行目录/范围。先 `target inspect`，再按 [迁移说明](README-PLACEMENT.md) 显式配置，不改正在运行的旧任务。 |
 | `companion-required` / `companion-unreachable` | 在已选实例安装并加载本仓库 placement 插件，核对 profile 及其私有状态目录；不尝试其他实例。 |
 | `instance-mismatch` / `instance-changed` | 当前端点与目标或回执的稳定实例身份不同；恢复原连接或使用新目标名，不覆盖旧任务绑定。 |

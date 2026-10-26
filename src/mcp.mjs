@@ -13,6 +13,27 @@ export function createMcpServer({ home, hub = new Hub({ home }) }) {
   const target = z.string().optional();
   const definitions = [
     [
+      "hub_recover",
+      "Recover an uncertain placement using the original job ID and frozen plan; sends no model prompt",
+      { jobId: z.string() },
+      (args) => hub.recover(args),
+      false,
+    ],
+    [
+      "hub_retry",
+      "Confirm an uncertain prompt from its original request ID and exact text; never resend",
+      { jobId: z.string(), text: z.string().min(1) },
+      (args) => hub.retryPrompt(args),
+      false,
+    ],
+    [
+      "hub_receipt",
+      "Read the durable receipt and retained backend completion evidence without changing a task",
+      { jobId: z.string() },
+      (args) => hub.receipt(args),
+      true,
+    ],
+    [
       "hub_inspect",
       "Read the explicitly selected instance identity and DSH workspace directory mapping",
       { target },

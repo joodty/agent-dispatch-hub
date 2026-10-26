@@ -172,7 +172,53 @@ export async function createDshAdapter(
     prepare: (args) => control("prepare", args),
     verify: (args) => control("verify", args),
     observeLegacy: (args) => control("observeLegacy", args),
-    send: (args) => client.sendMessage(args),
+    cursor: async ({ sessionId }) => ({
+      afterSeq: (await client.getMessages({ sessionId, maxMessages: 1 }))
+        .latestSeq,
+    }),
+    confirmPrompt: async ({ sessionId, requestId, afterSeq }) => {
+      const history = await client.getMessages({
+        sessionId,
+        requestId,
+        afterSeq,
+        maxMessages: 100,
+      });
+      const logged = history.messages?.some(
+        (m) => m.role === "user" && m.requestId === requestId,
+      );
+      const inbox = history.projections?.values?.inbox;
+      const queued =
+        inbox &&
+        Object.values(inbox).some(
+          (items) =>
+            Array.isArray(items) &&
+            items.some(
+              (m) => m.source?.kind === "user" && m.source.rpcId === requestId,
+            ),
+        );
+      return {
+        accepted: !!(logged || queued),
+        sessionId,
+        requestId,
+        afterSeq,
+        promptSent: false,
+      };
+    },
+    send: async ({ sessionId, text, requestId, afterSeq }) => {
+      if (typeof requestId !== "string" || !Number.isInteger(afterSeq))
+        throw new HubError(
+          "invalid-prompt-admission",
+          "A durable request ID and history cursor are required before sending.",
+        );
+      const value = await client.rpc("session.prompt", {
+        requestId,
+        sessionId,
+        mode: "queue",
+        content: [{ type: "text", text }],
+        clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      });
+      return { ...value, sessionId, requestId, afterSeq };
+    },
     wait: (args) => client.waitForSession(args),
     messages: (args) => client.getMessages(args),
     cancel: (args) => client.cancelSession(args),

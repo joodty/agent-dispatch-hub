@@ -131,6 +131,225 @@ export class Hub {
       ...(await this.withAdapter(selected, (a) => a.inspect())),
     };
   }
+  async receipt({ jobId } = {}) {
+    if (typeof jobId !== "string" || !/^job-[a-f0-9-]{36}$/.test(jobId))
+      throw new HubError("invalid-job", "Invalid job ID.");
+    return readJson(join(this.home, "jobs", jobId + ".json"));
+  }
+  checkPromptPolicy(job, target, text) {
+    if (job.version !== 2)
+      throw new HubError(
+        "legacy-follow-up-disabled",
+        "Create a fully configured v2 job for follow-up work; this legacy session is unchanged.",
+      );
+    if (digest(target.workspaces[job.workspace]) !== job.mappingHash)
+      throw new HubError(
+        "mapping-changed",
+        "This mapping changed after dispatch. Read, wait or cancel the original job, or dispatch a new one.",
+      );
+    if (typeof text !== "string" || !text.trim())
+      throw new HubError("task-required", "A nonempty task is required.");
+  }
+  // Caller owns the short job writer lock. Persist the identity before the RPC,
+  // A lost response cannot mint a second request. Reconfirmation is read-only.
+  async sendRecorded(adapter, job, text) {
+    if (job.pendingPrompt)
+      throw new HubError(
+        "prompt-admission-uncertain",
+        "The previous prompt may already be queued. Wait, or use retry with the identical text and recorded request ID.",
+      );
+    const pending = {
+      requestId: randomUUID(),
+      ...(await adapter.cursor({ sessionId: job.sessionId })),
+      textHash: digest(text),
+    };
+    if (!pending || pending.textHash !== digest(text))
+      throw new HubError(
+        "retry-text-mismatch",
+        "Retry requires the exact original task text; no prompt was sent.",
+      );
+    if (!Number.isSafeInteger(pending.afterSeq) || pending.afterSeq < -1)
+      throw new HubError(
+        "invalid-prompt-admission",
+        "The backend did not return a valid history cursor.",
+      );
+    job.previousResult = job.backendResult ?? job.result;
+    delete job.result;
+    delete job.backendResult;
+    delete job.placementError;
+    Object.assign(job, {
+      pendingPrompt: pending,
+      requestId: pending.requestId,
+      afterSeq: pending.afterSeq,
+      state: "prompt-admission-pending",
+    });
+    const file = join(this.home, "jobs", job.id + ".json");
+    await atomicJson(file, job);
+    try {
+      const sent = await adapter.send({
+        sessionId: job.sessionId,
+        text: placementInstructions(job.context, text),
+        requestId: pending.requestId,
+        afterSeq: pending.afterSeq,
+      });
+      if (
+        sent.requestId !== pending.requestId ||
+        sent.afterSeq !== pending.afterSeq
+      )
+        throw new HubError(
+          "prompt-identity-mismatch",
+          "The backend did not preserve the recorded prompt identity.",
+        );
+      const accepted = { ...job, state: "accepted" };
+      delete accepted.pendingPrompt;
+      delete accepted.promptError;
+      await atomicJson(file, accepted);
+      Object.assign(job, accepted);
+      delete job.pendingPrompt;
+      delete job.promptError;
+      return sent;
+    } catch (error) {
+      job.state = "prompt-admission-uncertain";
+      job.promptError = {
+        code:
+          typeof error.code === "string" &&
+          /^[a-z][a-z0-9-]{1,70}$/.test(error.code)
+            ? error.code
+            : "backend-error",
+      };
+      await atomicJson(file, job);
+      throw new HubError(
+        "prompt-admission-uncertain",
+        "The prompt response was not confirmed. Its request ID is retained; wait or retry the identical text on this job, rather than dispatching a new job.",
+        { jobId: job.id, target: job.target, sessionId: job.sessionId },
+      );
+    }
+  }
+  async afterWait(adapter, job, result) {
+    // Completion evidence remains readable even when placement later drifts.
+    await withJobWriter(this.home, job.id, async () => {
+      const latest = await this.receipt({ jobId: job.id });
+      if (latest.requestId !== job.requestId) return;
+      latest.backendResult = result;
+      if (result.completed) delete latest.pendingPrompt;
+      await atomicJson(join(this.home, "jobs", job.id + ".json"), latest);
+    });
+    job.backendResult = result;
+    if (result.completed) delete job.pendingPrompt;
+    try {
+      const verified = await adapter.verify({
+        jobId: job.id,
+        sessionId: job.sessionId,
+      });
+      assertContext(verified.context, job.context);
+    } catch (error) {
+      const placementError = {
+        code:
+          typeof error.code === "string" &&
+          /^[a-z][a-z0-9-]{1,70}$/.test(error.code)
+            ? error.code
+            : "placement-verification-failed",
+        message:
+          "Backend result retained, but the job placement failed verification. Read the receipt before continuing.",
+      };
+      job.placementError = placementError;
+      await withJobWriter(this.home, job.id, async () => {
+        const latest = await this.receipt({ jobId: job.id });
+        if (latest.requestId !== job.requestId) return;
+        latest.placementError = placementError;
+        await atomicJson(join(this.home, "jobs", job.id + ".json"), latest);
+      });
+      throw new HubError(placementError.code, placementError.message, {
+        jobId: job.id,
+        target: job.target,
+        sessionId: job.sessionId,
+      });
+    }
+  }
+  async recover({ jobId } = {}) {
+    await this.receipt({ jobId });
+    return withJobWriter(this.home, jobId, async () => {
+      const { job, selected } = await this.resolveJob(jobId, {
+        allowMissingSession: true,
+      });
+      if (
+        job.version !== 2 ||
+        job.requestId ||
+        job.pendingPrompt ||
+        job.state === "cancellation-requested"
+      )
+        throw new HubError(
+          "recovery-not-available",
+          "Only an unprompted v2 placement admission can be recovered; existing running tasks are unchanged.",
+        );
+      if (digest(selected.workspaces[job.workspace]) !== job.mappingHash)
+        throw new HubError(
+          "mapping-changed",
+          "Restore the original mapping before recovering its frozen placement plan.",
+        );
+      const prepared = await this.withAdapter(selected, async (a) => {
+        await a.assertInstance(job.instance);
+        return a.prepare({ jobId: job.id, plan: job.plan });
+      });
+      Object.assign(job, {
+        sessionId: prepared.sessionId,
+        context: prepared.context,
+        cwd: prepared.context.execution.actualCwd,
+        state: "prepared",
+      });
+      delete job.error;
+      await atomicJson(join(this.home, "jobs", job.id + ".json"), job);
+      return {
+        jobId: job.id,
+        target: job.target,
+        ...prepared,
+        promptSent: false,
+      };
+    });
+  }
+  async retryPrompt({ jobId, text } = {}) {
+    await this.receipt({ jobId });
+    return withJobWriter(this.home, jobId, async () => {
+      const { job, selected } = await this.resolveJob(jobId);
+      this.checkPromptPolicy(job, selected, text);
+      if (!job.pendingPrompt)
+        throw new HubError(
+          "retry-not-available",
+          "This job has no unconfirmed prompt to retry.",
+        );
+      if (job.pendingPrompt.textHash !== digest(text))
+        throw new HubError(
+          "retry-text-mismatch",
+          "Retry requires the exact original task text; no prompt was sent.",
+        );
+      return this.withAdapter(selected, async (a) => {
+        await a.assertInstance(job.instance);
+        const verified = await a.verify({
+          jobId: job.id,
+          sessionId: job.sessionId,
+        });
+        assertContext(verified.context, job.context);
+        const pending = job.pendingPrompt;
+        const confirmed = await a.confirmPrompt({
+          sessionId: job.sessionId,
+          requestId: pending.requestId,
+          afterSeq: pending.afterSeq,
+        });
+        if (!confirmed.accepted)
+          throw new HubError(
+            "prompt-admission-uncertain",
+            "The original request is not yet visible. No prompt was resent; keep waiting or explicitly cancel and investigate this job.",
+            { jobId: job.id, target: job.target, sessionId: job.sessionId },
+          );
+        if(confirmed.requestId!==pending.requestId || confirmed.afterSeq!==pending.afterSeq)throw new HubError("prompt-identity-mismatch","The backend confirmation did not preserve the recorded prompt identity; it remains uncertain.");
+        const accepted = { ...job, state: "accepted" };
+        delete accepted.pendingPrompt;
+        delete accepted.promptError;
+        await atomicJson(join(this.home, "jobs", job.id + ".json"), accepted);
+        return { jobId: job.id, target: job.target, ...confirmed };
+      });
+    });
+  }
   async dispatch({ target, workspace, text, timeoutMs = 55000 } = {}) {
     const selected = await this.target(target);
     if (!workspace || !Object.hasOwn(selected.workspaces, workspace))
@@ -197,12 +416,7 @@ export class Hub {
               "dispatch-cancelled",
               "This session was cancelled before its first task prompt. No task was sent.",
             );
-          const sent = await a.send({
-            sessionId: receipt.sessionId,
-            text: placementInstructions(receipt.context, text),
-          });
-          Object.assign(receipt, sent, { state: "accepted" });
-          await atomicJson(path, receipt);
+          await this.sendRecorded(a, receipt, text);
         });
         const result = await a.wait({
           sessionId: receipt.sessionId,
@@ -210,11 +424,7 @@ export class Hub {
           afterSeq: receipt.afterSeq,
           timeoutMs,
         });
-        const after = await a.verify({
-          jobId: receipt.id,
-          sessionId: receipt.sessionId,
-        });
-        assertContext(after.context, receipt.context);
+        await this.afterWait(a, receipt, result);
         return {
           sessionId: receipt.sessionId,
           requestId: receipt.requestId,
@@ -254,7 +464,9 @@ export class Hub {
     } catch (error) {
       if (!receipt.sessionId && typeof error.details?.sessionId === "string")
         receipt.sessionId = error.details.sessionId;
-      receipt.state = "error";
+      receipt.state = receipt.pendingPrompt
+        ? "prompt-admission-uncertain"
+        : "error";
       receipt.error = {
         code: error.code ?? "backend-error",
         message:
@@ -278,7 +490,7 @@ export class Hub {
       });
     }
   }
-  async resolveJob(id) {
+  async resolveJob(id, { allowMissingSession = false } = {}) {
     if (typeof id !== "string" || !/^job-[a-f0-9-]{36}$/.test(id))
       throw new HubError("invalid-job", "Invalid job ID.");
     const job = await readJson(join(this.home, "jobs", id + ".json"));
@@ -288,7 +500,7 @@ export class Hub {
         "target-changed",
         "This job belongs to the target connection captured at dispatch. Restore that connection or create a new job.",
       );
-    if (!job.sessionId)
+    if (!job.sessionId && !allowMissingSession)
       throw new HubError(
         "session-unavailable",
         "This job has no confirmed backend session. Inspect its admission error.",
@@ -412,33 +624,26 @@ export class Hub {
       this.withAdapter(target, async (a) => {
         await a.assertInstance(current.instance);
         if (operation === "send") {
-          if (current.version !== 2)
+          this.checkPromptPolicy(current, target, text);
+          if (current.pendingPrompt)
             throw new HubError(
-              "legacy-follow-up-disabled",
-              "Create a fully configured v2 job for follow-up work; this legacy session is unchanged.",
+              "prompt-admission-uncertain",
+              "The previous prompt may already be queued. Wait or retry the same text on this job.",
             );
-          if (
-            digest(target.workspaces[current.workspace]) !== current.mappingHash
-          )
-            throw new HubError(
-              "mapping-changed",
-              "This mapping changed after dispatch. Read, wait or cancel the original job, or dispatch a new one.",
-            );
-          if (typeof text !== "string" || !text.trim())
-            throw new HubError("task-required", "A nonempty task is required.");
-          if (!current.requestId)
+          if (!current.requestId && current.state !== "prepared")
             throw new HubError(
               "request-unavailable",
               "The first task has not been admitted. Wait for dispatch admission before sending a follow-up.",
             );
         }
-        if (current.version === 2 && operation !== "cancel") {
+        if (current.version === 2 && !["cancel", "wait"].includes(operation)) {
           const verified = await a.verify({
             jobId: current.id,
             sessionId: current.sessionId,
           });
           assertContext(verified.context, current.context);
         }
+        if (operation === "send") return this.sendRecorded(a, current, text);
         const result = await a[operation]({
           sessionId: current.sessionId,
           afterSeq: current.afterSeq,
@@ -449,11 +654,7 @@ export class Hub {
           ...(operation === "wait" ? { timeoutMs } : {}),
         });
         if (current.version === 2 && operation === "wait") {
-          const verified = await a.verify({
-            jobId: current.id,
-            sessionId: current.sessionId,
-          });
-          assertContext(verified.context, current.context);
+          await this.afterWait(a, current, result);
         }
         return result;
       });
@@ -469,7 +670,8 @@ export class Hub {
         const { job: latest } = await this.resolveJob(job.id);
         const superseded =
           latest.requestId !== job.requestId ||
-          latest.afterSeq !== job.afterSeq;
+          latest.afterSeq !== job.afterSeq ||
+          latest.state === "cancellation-requested";
         if (!superseded && !(latest.result?.completed && result.timedOut)) {
           latest.state = result.status;
           latest.result = result;

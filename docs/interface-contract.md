@@ -9,8 +9,8 @@ Schema and native DSH behavior: [PLACEMENT-V2.md](PLACEMENT-V2.md).
 Migration and installation: [README-PLACEMENT.md](README-PLACEMENT.md).
 Portable examples: [config.example.json](../examples/config.example.json).
 
-Adapters implement `inspect`, `assertInstance`, `prepare`, `verify`, `send`, `wait`,
-`messages`, `cancel`, `readArtifact`, `observeLegacy`, `status`, `close`. `prepare`
+Adapters implement `inspect`, `assertInstance`, `prepare`, `verify`, `send`, `wait`, `confirmPrompt`,
+`cursor`, `messages`, `cancel`, `readArtifact`, `observeLegacy`, `status`, `close`. `prepare`
 returns `{sessionId,context}`. `verify` returns the same context after observing
 the backend. Context contains `instance`, `dshWorkspace`,
 `execution:{requestedCwd,actualCwd,initialCwd}`, `source:{root,canonicalRoot}`
@@ -39,6 +39,13 @@ is read-only and does not resume a session.
 
 MCP: `hub_targets`, `hub_status`, `hub_inspect`, `hub_dispatch`, `hub_send`,
 `hub_wait`, `hub_messages`, `hub_cancel`, `hub_verify`, `hub_artifact`.
+Recovery tools: `hub_recover`, `hub_retry`, `hub_receipt`. Prompt IDs/cursors are
+persisted before admission, and the adapter must preserve both. An uncertain
+prompt blocks new sends; `retry` requires identical text and confirms the original
+ID from recorded messages or inbox without resending. Absence is uncertain, not
+permission to repeat a prompt. Placement recovery reuses the frozen job/plan and sends no prompt. Completion
+evidence is stored as `backendResult` before post-wait placement checks; a failed
+check still errors, with evidence available through the local receipt.
 CLI adds `target inspect`, `target configure --mapping-file`, `legacy-bind`,
 `verify`, `artifact`. Existing setup commands stage a connection and legacy alias;
 new dispatch remains blocked until explicit placement configuration is applied.

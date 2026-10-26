@@ -121,3 +121,96 @@ test("endpoint identity mismatch and raw server failures cannot dispatch or expo
   );
   await adapter.close();
 });
+
+test("prompt RPC preserves the controller request ID and frozen cursor across retries", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "adh-prompt-wire-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const calls = [];
+  class DshClient {
+    constructor() {
+      this.localAuth = {};
+    }
+    getMessages() {
+      return { latestSeq: 17 };
+    }
+    sendMessage() {
+      throw Error("Must not mint a request ID in the bridge");
+    }
+    async rpc(method, payload) {
+      calls.push({ method, payload });
+      if (calls.length === 1)
+        throw Object.assign(Error("dummy lost response"), {
+          code: "request-timeout",
+        });
+      return { accepted: true };
+    }
+    close() {}
+  }
+  const adapter = await createDshAdapter(
+    {
+      name: "test",
+      connection: { kind: "local", connectionFile: "/dummy/local.json" },
+    },
+    { home, clientModule: { DshClient } },
+  );
+  const cursor = await adapter.cursor({ sessionId: "session-test" });
+  const args = {
+    sessionId: "session-test",
+    requestId: "00000000-0000-4000-8000-000000000001",
+    afterSeq: cursor.afterSeq,
+    text: "task",
+  };
+  await assert.rejects(adapter.send(args), { code: "request-timeout" });
+  const sent = await adapter.send(args);
+  assert.equal(sent.requestId, args.requestId);
+  assert.equal(sent.afterSeq, 17);
+  assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0].method, "session.prompt");
+  await adapter.close();
+});
+
+test("confirmation observes a logged or queued request and never posts another prompt", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "adh-confirm-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  let history = { messages: [] };
+  let posts = 0;
+  class DshClient {
+    getMessages() {
+      return history;
+    }
+    rpc() {
+      posts++;
+      throw Error("Unexpected prompt POST");
+    }
+    close() {}
+  }
+  const adapter = await createDshAdapter(
+    {
+      name: "test",
+      connection: { kind: "local", connectionFile: "/dummy/local.json" },
+    },
+    { home, clientModule: { DshClient } },
+  );
+  const args = {
+    sessionId: "session-test",
+    requestId: "dummy-request",
+    afterSeq: 3,
+  };
+  assert.equal((await adapter.confirmPrompt(args)).accepted, false);
+  history = { messages: [{ role: "user", requestId: "dummy-request" }] };
+  assert.equal((await adapter.confirmPrompt(args)).accepted, true);
+  history = {
+    messages: [],
+    projections: {
+      values: {
+        inbox: {
+          "next-turn": [{ source: { kind: "user", rpcId: "dummy-request" } }],
+        },
+      },
+    },
+  };
+  const confirmed = await adapter.confirmPrompt(args);
+  assert.equal(confirmed.accepted, true);
+  assert.equal(confirmed.promptSent, false);
+  assert.equal(posts, 0);
+});

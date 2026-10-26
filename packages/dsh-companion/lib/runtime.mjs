@@ -8,6 +8,7 @@ export function runtimeFor(ctx) {
     ["workingDirectory", "set"],
     ["workingDirectory", "ensure"],
     ["workingDirectory", "get"],
+    ["workingDirectory", "directory"],
     ["sessionQuery", "observeSession"],
   ])
     if (typeof ctx[name]?.[method] !== "function")

@@ -161,6 +161,12 @@ const help = {
       "--job job-...: verify workspace affiliation and effective cwd through the selected companion",
     artifact:
       "--job job-... --path relative/file.txt: read through the frozen task placement",
+    recover:
+      "--job job-...: recover an unconfirmed placement using its original job ID; sends no prompt",
+    retry:
+      "--job job-... --text-file original-task.txt: confirm an uncertain prompt by original request ID and identical text; never resend",
+    receipt:
+      "--job job-...: read the controller receipt, including retained backend completion after placement drift",
     status: "[--target office]",
     dispatch:
       '--target office --workspace demo --text "task" [--timeout-ms 55000]',
@@ -509,6 +515,18 @@ async function main() {
   }
   if (p[0] === "legacy-bind") {
     print(await hub.bindLegacy({ jobId: v.job, target: v.target }));
+    return;
+  }
+  if (p[0] === "recover") {
+    print(await hub.recover({ jobId: v.job }));
+    return;
+  }
+  if (p[0] === "retry") {
+    print(await hub.retryPrompt({ jobId: v.job, text: await taskText() }));
+    return;
+  }
+  if (p[0] === "receipt") {
+    print(await hub.receipt({ jobId: v.job }));
     return;
   }
   if (p[0] === "verify") {
