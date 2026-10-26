@@ -73,6 +73,12 @@ export class Hub {
       return await fn(adapter);
     } catch (error) {
       if (error instanceof HubError) throw error;
+      if ([401, 403].includes(error.details?.status))
+        throw new HubError(
+          "authentication-required",
+          "The selected DSH rejected authentication. Pair a remote target again, or check the chosen local companion.",
+          { target: target.name },
+        );
       throw new HubError(
         "backend-error",
         "The selected backend failed. Check authentication, endpoint readiness and the target configuration.",

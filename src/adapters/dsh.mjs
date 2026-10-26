@@ -42,7 +42,15 @@ export async function createDshAdapter(target, { home, clientModule } = {}) {
         "invalid-target",
         "Remote DSH requires a clean HTTPS origin.",
       );
-    const credential = await readJson(connection.credentialFile);
+    let credential;
+    try {
+      credential = await readJson(connection.credentialFile);
+    } catch {
+      throw new HubError(
+        "pairing-required",
+        "Pair the selected remote target before dispatch.",
+      );
+    }
     if (credential.version !== 1 || credential.origin !== origin.origin)
       throw new HubError(
         "credential-mismatch",

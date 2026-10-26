@@ -391,13 +391,13 @@ async function main() {
   }
   if (p[0] === "smoke") {
     const { smoke } = await import("../src/core/smoke.mjs");
-    print(
-      await smoke(hub, {
-        target: v.target,
-        workspace: v.workspace?.[0],
-        timeoutMs: timeout(),
-      }),
-    );
+    const result = await smoke(hub, {
+      target: v.target,
+      workspace: v.workspace?.[0],
+      timeoutMs: timeout(),
+    });
+    print(result);
+    if (!result.verification.passed) process.exitCode = 2;
     return;
   }
   throw new HubError("unknown-command", "Unknown command. Run with --help.");

@@ -21,7 +21,7 @@ export async function smoke(
     return {
       ...result,
       artifact,
-      verification: { passed: false, pending: true },
+      verification: { passed: false, pending: result.timedOut === true },
     };
   const { job, selected: original } = await hub.resolveJob(result.jobId);
   const page = await hub.withAdapter(original, (a) => {
