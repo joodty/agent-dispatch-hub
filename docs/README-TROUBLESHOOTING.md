@@ -4,6 +4,10 @@
 
 | 现象 | 处理顺序 |
 | --- | --- |
+| `readonly-unsupported` / `safe-runs-unsupported` | 核对所选实例的 companion 版本与 `safeRunsVersion`；按 [安全执行说明](README-SAFETY.md) 升级。不能回退成普通提示词只读，也不自动给旧任务补加限制。 |
+| `source-locked` / `source-run-active` | 原请求仍持有重叠源码租约。对原 job 运行 `wait` 或 `changes` 核对结束；独立 cwd 不等于独立源码，不删除锁来并发写。 |
+| `run-audit-unconfirmed` | 完成证据仍在 `receipt`；修复目标端扫描超限、不可读或不稳定问题后重试 `changes`，未完成审计继续持锁。 |
+| `run-admission-unconfirmed` / `lease-store-busy` | 保留原 job/request ID，核对目标的私有记录和真实活动。当前版本不自动清理准备中断或遗留事务锁；不要依据时间或控制端 PID 直接删除。 |
 | `prompt-admission-uncertain` | 不要重新派发；先用原 job ID 等待，或用 `retry --job <id> --text-file <原任务文件>` 只读核对原 request ID。未见请求仍报待确认，不再次发送；不同文本不能当作核对原请求。 |
 | 准备超时且回执没有 session ID | 使用 `recover --job <id>` 重放原计划，不生成新 job ID；恢复只确认会话，不发模型提示。 |
 | 任务已完成但目录校验失败 | 用 `receipt --job <id>` 读取保留的 `backendResult` 与 `placementError`，先核对环境，不绕过归属继续发任务。 |

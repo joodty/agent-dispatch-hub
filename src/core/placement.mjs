@@ -18,7 +18,11 @@ export function digest(value) {
     .digest("hex");
 }
 export function placementInstructions(context, text) {
-  return `Agent Dispatch Hub task placement (directory ranges below are instructions, not a sandbox permission grant):\n${JSON.stringify(context)}\nKeep the recorded actualCwd for this entire task. Source is the recorded source.root; the task cwd is not a source copy or Git worktree. Read and write only within the recorded scope. Do not broaden permissions or change the model.\n\nTask:\n${text}`;
+  const capability =
+    context?.safety?.capability === "readonly"
+      ? "This session is permanently readonly: use only native read, glob and grep. Do not write even inside the declared write scope. Do not use shell, MCP actions, subagents or change capability."
+      : "Read and write only within the recorded scope.";
+  return `Agent Dispatch Hub task placement (directory ranges below are instructions, not a sandbox permission grant):\n${JSON.stringify(context)}\nKeep the recorded actualCwd for this entire task. Source is the recorded source.root; the task cwd is not a source copy or Git worktree. ${capability} Do not broaden permissions or change the model.\n\nTask:\n${text}`;
 }
 export function assertContext(actual, expected) {
   if (digest(actual) !== digest(expected))

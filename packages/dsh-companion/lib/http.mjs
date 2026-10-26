@@ -38,6 +38,9 @@ export function handlerFor(ctx, service) {
           "verify",
           "readArtifact",
           "observeLegacy",
+          "beginRun",
+          "finishRun",
+          "changes",
         ].includes(body.operation)
       ) {
         const e = new Error();

@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
 import { isAbsolute, join, parse, resolve, dirname } from "node:path";
 import { PlacementService } from "./service.mjs";
-import { runtimeFor, guardManagedDirectories } from "./runtime.mjs";
+import {
+  runtimeFor,
+  guardManagedDirectories,
+  guardManagedTools,
+} from "./runtime.mjs";
 import { handlerFor, CONTROL_PATH } from "./http.mjs";
 export const inject = [
   "webServer",
@@ -13,6 +17,7 @@ export const inject = [
   "workingDirectory",
   "sessionQuery",
   "profileContext",
+  "tools",
 ];
 
 async function atomic(path, value) {
@@ -61,13 +66,22 @@ export function apply(ctx, config = {}) {
       instance,
       stateDir: join(stateDir, "jobs"),
       runtime,
+      snapshotLimits: config.snapshotLimits,
     });
     await service.initialize();
     const unguard = guardManagedDirectories(ctx.workingDirectory, service);
+    const unguardTools = guardManagedTools(ctx, service);
     let unroute;
     const connectionPath = join(stateDir, "connection.json");
     const publicationId = randomUUID();
     try {
+      for (const record of service.records.values())
+        if (
+          record.state === "ready" &&
+          record.capability === "readonly" &&
+          ctx.agents.get(record.sessionId)
+        )
+          await runtime.configureReadonly(record.sessionId);
       unroute = ctx.webServer.register({
         kind: "exact",
         path: CONTROL_PATH,
@@ -94,11 +108,15 @@ export function apply(ctx, config = {}) {
     } catch (e) {
       unroute?.();
       unguard();
+      unguardTools();
+      runtime.disposeSafety();
       throw e;
     }
     return async () => {
       unroute?.();
       unguard();
+      unguardTools();
+      runtime.disposeSafety();
       try {
         const published = JSON.parse(await readFile(connectionPath, "utf8"));
         if (published.instanceId === publicationId)

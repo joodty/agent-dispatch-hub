@@ -171,6 +171,9 @@ export async function createDshAdapter(
     },
     prepare: (args) => control("prepare", args),
     verify: (args) => control("verify", args),
+    beginRun: (args) => control("beginRun", args),
+    finishRun: (args) => control("finishRun", args),
+    changes: (args) => control("changes", args),
     observeLegacy: (args) => control("observeLegacy", args),
     cursor: async ({ sessionId }) => ({
       afterSeq: (await client.getMessages({ sessionId, maxMessages: 1 }))
