@@ -1,0 +1,6 @@
+{
+  "target": "<target-name>",
+  "workspace": "<mapping-name>",
+  "text": "Read the project's test entry points and report findings with file references.",
+  "timeoutMs": 55000
+}

@@ -13,6 +13,8 @@ import {
 } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
+import { SafeRuns } from "./safe-runs.mjs";
+import { normalizeSnapshotLimits } from "./file-snapshots.mjs";
 import {
   planPlacement,
   normalizeTargetPath,
@@ -53,13 +55,16 @@ async function atomic(file, value) {
 }
 
 export class PlacementService {
-  constructor({ instance, stateDir, runtime }) {
+  constructor({ instance, stateDir, runtime, snapshotLimits }) {
     this.instance = validateTargetBinding(instance);
     this.stateDir = stateDir;
     this.runtime = runtime;
+    this.snapshotLimits = normalizeSnapshotLimits(snapshotLimits);
     this.paths = path[instance.pathStyle];
     this.records = new Map();
     this.locks = new Map();
+    this.savers = new Map();
+    this.safeRuns = new SafeRuns(this);
     if (
       instance.pathStyle !== (process.platform === "win32" ? "win32" : "posix")
     )
@@ -112,6 +117,7 @@ export class PlacementService {
       delete record.initializing;
       this.records.set(id, record);
     }
+    await this.safeRuns.validate();
     return this;
   }
   async inspect() {
@@ -122,12 +128,24 @@ export class PlacementService {
         placement: true,
         instructionScopes: true,
         sandboxRequired: false,
+        safeRunsVersion: this.runtime.safetySupported === true ? 1 : 0,
+        snapshotLimits: this.snapshotLimits,
       },
       workspaces: await this.runtime.listWorkspaces(),
     };
   }
   save(record) {
-    return atomic(path.join(this.stateDir, record.jobId + ".json"), record);
+    const previous = this.savers.get(record.jobId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(() =>
+        atomic(path.join(this.stateDir, record.jobId + ".json"), record),
+      );
+    this.savers.set(record.jobId, next);
+    return next.finally(() => {
+      if (this.savers.get(record.jobId) === next)
+        this.savers.delete(record.jobId);
+    });
   }
   prepare(args) {
     const id = args?.jobId;
@@ -139,7 +157,16 @@ export class PlacementService {
       if (this.locks.get(id) === promise) this.locks.delete(id);
     });
   }
-  async prepareOne({ jobId, plan }) {
+  async prepareOne({ jobId, plan, safetyVersion, capability }) {
+    if (
+      safetyVersion !== undefined &&
+      (safetyVersion !== 1 ||
+        !["coding", "readonly"].includes(capability) ||
+        this.runtime.safetySupported !== true)
+    )
+      throw failure("safe-runs-unsupported");
+    if (safetyVersion === undefined && capability !== undefined)
+      throw failure("invalid-capability");
     if (
       !plan ||
       plan.jobId !== jobId ||
@@ -165,7 +192,11 @@ export class PlacementService {
       },
     });
     if (hash(normalized) !== hash(plan)) throw failure("plan-mismatch");
-    const planHash = hash(normalized);
+    const planHash = hash(
+      safetyVersion === 1
+        ? { plan: normalized, safetyVersion, capability }
+        : normalized,
+    );
     const previous = this.records.get(jobId);
     if (previous) {
       if (previous.planHash !== planHash)
@@ -239,6 +270,7 @@ export class PlacementService {
       state: "preparing",
       expectedCwd: cwd,
       plan: normalized,
+      ...(safetyVersion === 1 ? { safetyVersion, capability } : {}),
     };
     this.records.set(jobId, record);
     await this.save(record);
@@ -268,6 +300,8 @@ export class PlacementService {
         delete record.initializing;
       }
       const observed = await this.runtime.observeSession(record.sessionId);
+      if (safetyVersion === 1 && capability === "readonly")
+        await this.runtime.configureReadonly(record.sessionId);
       if (
         !this.same(observed.initialCwd, workspacePath) ||
         !this.same(observed.actualCwd, cwd)
@@ -287,6 +321,7 @@ export class PlacementService {
         },
         source: { root: plan.source.root, canonicalRoot: source },
         scope: { read, write, enforcement: "instructions" },
+        ...(safetyVersion === 1 ? { safety: { version: 1, capability } } : {}),
       };
       record.state = "ready";
       await this.save(record);
@@ -357,6 +392,15 @@ export class PlacementService {
         if (!this.same(await this.directory(roots[i]), c.scope[type][i]))
           throw failure("scope-path-drift", sessionId);
     return { sessionId, context: structuredClone(c) };
+  }
+  beginRun(args) {
+    return this.safeRuns.begin(args);
+  }
+  finishRun(args) {
+    return this.safeRuns.finish(args);
+  }
+  changes(args) {
+    return this.safeRuns.finish(args);
   }
   async readArtifact({ jobId, sessionId, path: relative } = {}) {
     const { context: c } = await this.verify({ jobId, sessionId });

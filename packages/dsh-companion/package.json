@@ -1,6 +1,6 @@
 {
   "name": "agent-dispatch-hub-dsh",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Authenticated DSH workspace affiliation and task directory admission for Agent Dispatch Hub.",
   "type": "module",
   "main": "lib/index.mjs",

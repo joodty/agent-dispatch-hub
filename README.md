@@ -15,7 +15,9 @@ flowchart LR
     W --> G
 ```
 
-v0.2.0 只包含 DSH 适配器。这不是 Codex 原生子代理，也不会自动复用 Codex 模型额度或密钥；执行模型及其登录、权限和费用由 DSH 环境管理。后续后端可通过适配器接口扩展。
+v0.3.0 只包含 DSH 适配器。这不是 Codex 原生子代理，也不会自动复用 Codex 模型额度或密钥；执行模型及其登录、权限和费用由 DSH 环境管理。后续后端可通过适配器接口扩展。
+
+新版增加独立只读派工、目标端源码并发租约和有边界的文件变更记录，保留原有 DSH 接入方式。能力、升级和异常接手见 [安全执行说明](docs/README-SAFETY.md)；真实模型验收状态见 [v0.3 验证记录](docs/VALIDATION-V0.3.md)。
 
 旧配置升级先读 [工作区与迁移说明](docs/README-PLACEMENT.md)。工作区归组与文件权限分别处理；当前读写范围作为明确的任务指令，不声称任意目录的沙箱强制隔离。
 
@@ -29,7 +31,7 @@ v0.2.0 只包含 DSH 适配器。这不是 Codex 原生子代理，也不会自�
 node bin/adh.mjs doctor
 node bin/adh.mjs target list
 node bin/adh.mjs status --target office
-node bin/adh.mjs dispatch --target office --workspace demo --text "检查当前项目并说明下一步建议，先不要修改文件。"
+node bin/adh.mjs dispatch-readonly --target office --workspace demo --text "检查当前项目并说明下一步建议。"
 ```
 
 `office` 和 `demo` 是示例名称，使用配置中真实存在的目标和工作区别名。
@@ -42,6 +44,7 @@ node bin/adh.mjs dispatch --target office --workspace demo --text "检查当前�
 | 交给 AI 安装、接入和验收 | [AI 安装交接](README-AI.md) |
 | 配置本机、远程目标或处理配对 | [连接与配置](docs/README-CONNECTIONS.md) |
 | 设置归属、独立任务目录及迁移旧配置 | [工作区与迁移](docs/README-PLACEMENT.md) |
+| 只读调查、源码锁、文件记录及升级 | [安全执行](docs/README-SAFETY.md) |
 | 修改代码、增加后端适配器 | [开发说明](docs/README-DEVELOPMENT.md) |
 | 安装失败、连接失败、任务异常 | [故障排查](docs/README-TROUBLESHOOTING.md) |
 | 查看依赖来源和许可边界 | [第三方说明](docs/THIRD-PARTY.md) |

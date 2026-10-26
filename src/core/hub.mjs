@@ -158,10 +158,20 @@ export class Hub {
         "prompt-admission-uncertain",
         "The previous prompt may already be queued. Wait, or use retry with the identical text and recorded request ID.",
       );
+    if (
+      job.safetyVersion === 1 &&
+      job.requestId &&
+      job.runAudit?.state !== "finished"
+    )
+      throw new HubError(
+        "source-run-active",
+        "Finish and inspect the current run with wait or changes before sending another task.",
+      );
     const pending = {
       requestId: randomUUID(),
       ...(await adapter.cursor({ sessionId: job.sessionId })),
       textHash: digest(text),
+      ...(job.safetyVersion === 1 ? { stage: "run" } : {}),
     };
     if (!pending || pending.textHash !== digest(text))
       throw new HubError(
@@ -185,6 +195,34 @@ export class Hub {
     });
     const file = join(this.home, "jobs", job.id + ".json");
     await atomicJson(file, job);
+    if (job.safetyVersion === 1) {
+      try {
+        job.runAudit = await adapter.beginRun({
+          jobId: job.id,
+          sessionId: job.sessionId,
+          requestId: pending.requestId,
+        });
+        if (
+          job.runAudit.state !== "running" ||
+          job.runAudit.requestId !== pending.requestId
+        )
+          throw new HubError(
+            "invalid-run-admission",
+            "Target did not confirm this run's source lease and baseline.",
+          );
+        pending.stage = "prompt";
+        await atomicJson(file, job);
+      } catch (error) {
+        job.state = "run-admission-unconfirmed";
+        job.runError = { code: error.code ?? "run-admission-unconfirmed" };
+        await atomicJson(file, job);
+        throw new HubError(
+          error instanceof HubError ? error.code : "run-admission-unconfirmed",
+          "Source lease or baseline admission was not confirmed. No prompt was sent. Inspect this job before creating another task.",
+          { jobId: job.id, target: job.target, sessionId: job.sessionId },
+        );
+      }
+    }
     try {
       const sent = await adapter.send({
         sessionId: job.sessionId,
@@ -236,6 +274,36 @@ export class Hub {
     });
     job.backendResult = result;
     if (result.completed) delete job.pendingPrompt;
+    if (job.safetyVersion === 1) {
+      try {
+        const audit = await adapter.finishRun({
+          jobId: job.id,
+          sessionId: job.sessionId,
+          requestId: job.requestId,
+        });
+        job.runAudit = audit;
+        await withJobWriter(this.home, job.id, async () => {
+          const latest = await this.receipt({ jobId: job.id });
+          if (latest.requestId !== job.requestId) return;
+          latest.runAudit = audit;
+          delete latest.runError;
+          await atomicJson(join(this.home, "jobs", job.id + ".json"), latest);
+        });
+      } catch (error) {
+        job.runError = { code: "run-audit-unconfirmed" };
+        await withJobWriter(this.home, job.id, async () => {
+          const latest = await this.receipt({ jobId: job.id });
+          if (latest.requestId !== job.requestId) return;
+          latest.runError = job.runError;
+          await atomicJson(join(this.home, "jobs", job.id + ".json"), latest);
+        });
+        throw new HubError(
+          "run-audit-unconfirmed",
+          "Backend result retained; source lease remains held until target audit succeeds. Use changes to reconcile this run.",
+          { jobId: job.id, target: job.target, sessionId: job.sessionId },
+        );
+      }
+    }
     try {
       const verified = await adapter.verify({
         jobId: job.id,
@@ -289,8 +357,23 @@ export class Hub {
         );
       const prepared = await this.withAdapter(selected, async (a) => {
         await a.assertInstance(job.instance);
-        return a.prepare({ jobId: job.id, plan: job.plan });
+        return a.prepare({
+          jobId: job.id,
+          plan: job.plan,
+          ...(job.safetyVersion === 1
+            ? { safetyVersion: 1, capability: job.capability }
+            : {}),
+        });
       });
+      if (
+        job.safetyVersion === 1 &&
+        digest(prepared.context?.safety) !==
+          digest({ version: 1, capability: job.capability })
+      )
+        throw new HubError(
+          "capability-mismatch",
+          "Recovered placement did not preserve the original task capability.",
+        );
       Object.assign(job, {
         sessionId: prepared.sessionId,
         context: prepared.context,
@@ -317,6 +400,11 @@ export class Hub {
           "retry-not-available",
           "This job has no unconfirmed prompt to retry.",
         );
+      if (job.safetyVersion === 1 && job.pendingPrompt.stage !== "prompt")
+        throw new HubError(
+          "run-admission-unconfirmed",
+          "This job did not reach prompt admission. Retry never resends a prompt or bypasses its source lease.",
+        );
       if (job.pendingPrompt.textHash !== digest(text))
         throw new HubError(
           "retry-text-mismatch",
@@ -341,7 +429,14 @@ export class Hub {
             "The original request is not yet visible. No prompt was resent; keep waiting or explicitly cancel and investigate this job.",
             { jobId: job.id, target: job.target, sessionId: job.sessionId },
           );
-        if(confirmed.requestId!==pending.requestId || confirmed.afterSeq!==pending.afterSeq)throw new HubError("prompt-identity-mismatch","The backend confirmation did not preserve the recorded prompt identity; it remains uncertain.");
+        if (
+          confirmed.requestId !== pending.requestId ||
+          confirmed.afterSeq !== pending.afterSeq
+        )
+          throw new HubError(
+            "prompt-identity-mismatch",
+            "The backend confirmation did not preserve the recorded prompt identity; it remains uncertain.",
+          );
         const accepted = { ...job, state: "accepted" };
         delete accepted.pendingPrompt;
         delete accepted.promptError;
@@ -350,7 +445,18 @@ export class Hub {
       });
     });
   }
-  async dispatch({ target, workspace, text, timeoutMs = 55000 } = {}) {
+  async dispatch({
+    target,
+    workspace,
+    text,
+    timeoutMs = 55000,
+    capability = "coding",
+  } = {}) {
+    if (!["coding", "readonly"].includes(capability))
+      throw new HubError(
+        "invalid-capability",
+        "Choose coding or readonly capability.",
+      );
     const selected = await this.target(target);
     if (!workspace || !Object.hasOwn(selected.workspaces, workspace))
       throw new HubError(
@@ -396,8 +502,36 @@ export class Hub {
     await atomicJson(path, receipt);
     try {
       const result = await this.withAdapter(selected, async (a) => {
-        await a.assertInstance(receipt.instance);
-        const prepared = await a.prepare({ jobId: receipt.id, plan });
+        const inspection = await a.assertInstance(receipt.instance);
+        if (inspection?.capabilities?.safeRunsVersion === 1) {
+          receipt.safetyVersion = 1;
+          receipt.capability = capability;
+          receipt.safety = { supported: true };
+        } else {
+          receipt.safety = { supported: false };
+          if (capability === "readonly")
+            throw new HubError(
+              "readonly-unsupported",
+              "This target companion does not enforce readonly runs. Update it before readonly dispatch.",
+            );
+        }
+        await atomicJson(path, receipt);
+        const prepared = await a.prepare({
+          jobId: receipt.id,
+          plan,
+          ...(receipt.safetyVersion === 1
+            ? { safetyVersion: 1, capability }
+            : {}),
+        });
+        if (
+          receipt.safetyVersion === 1 &&
+          digest(prepared.context?.safety) !==
+            digest({ version: 1, capability })
+        )
+          throw new HubError(
+            "capability-mismatch",
+            "Target did not preserve the frozen task capability.",
+          );
         Object.assign(receipt, {
           sessionId: prepared.sessionId,
           context: prepared.context,
@@ -458,15 +592,22 @@ export class Hub {
         target: selected.name,
         workspace,
         context: receipt.context,
+        safety: receipt.safety,
+        ...(receipt.safetyVersion === 1
+          ? { capability: receipt.capability, runAudit: receipt.runAudit }
+          : {}),
         ...result,
         ...(superseded ? { superseded: true } : {}),
       };
     } catch (error) {
       if (!receipt.sessionId && typeof error.details?.sessionId === "string")
         receipt.sessionId = error.details.sessionId;
-      receipt.state = receipt.pendingPrompt
-        ? "prompt-admission-uncertain"
-        : "error";
+      receipt.state =
+        receipt.runError && receipt.pendingPrompt?.stage === "run"
+          ? "run-admission-unconfirmed"
+          : receipt.pendingPrompt
+            ? "prompt-admission-uncertain"
+            : "error";
       receipt.error = {
         code: error.code ?? "backend-error",
         message:
@@ -615,6 +756,32 @@ export class Hub {
         })),
       };
     });
+  }
+  async changes({ jobId, requestId } = {}) {
+    const { job, selected } = await this.resolveJob(jobId);
+    if (job.safetyVersion !== 1)
+      throw new HubError(
+        "safe-runs-unsupported",
+        "This existing job has no safety run record; it is not retroactively enrolled.",
+      );
+    requestId ??= job.requestId;
+    if (typeof requestId !== "string" || !/^[a-f0-9-]{36}$/.test(requestId))
+      throw new HubError(
+        "request-required",
+        "Choose this job's recorded request ID.",
+      );
+    const audit = await this.withAdapter(selected, async (a) => {
+      await a.assertInstance(job.instance);
+      return a.changes({ jobId: job.id, sessionId: job.sessionId, requestId });
+    });
+    await withJobWriter(this.home, job.id, async () => {
+      const latest = await this.receipt({ jobId: job.id });
+      if (latest.requestId !== requestId) return;
+      latest.runAudit = audit;
+      delete latest.runError;
+      await atomicJson(join(this.home, "jobs", job.id + ".json"), latest);
+    });
+    return { jobId: job.id, target: job.target, ...audit };
   }
   async operate(operation, { jobId, text, timeoutMs = 55000 } = {}) {
     if (!["send", "wait", "messages", "cancel"].includes(operation))

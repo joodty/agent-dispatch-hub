@@ -27,7 +27,15 @@ test("one generic MCP surface routes requests and returns recoverable failures w
     await server.close();
   });
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 13);
+  assert.equal(listed.tools.length, 15);
+  assert.equal(
+    listed.tools.find((t) => t.name === "hub_changes").annotations.readOnlyHint,
+    false,
+  );
+  assert.equal(
+    listed.tools.find((t) => t.name === "hub_wait").annotations.readOnlyHint,
+    false,
+  );
   assert.ok(listed.tools.every((tool) => tool.name.startsWith("hub_")));
   assert.equal(
     (

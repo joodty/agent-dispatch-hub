@@ -52,6 +52,7 @@ const strings = [
   "from-file",
   "mapping-file",
   "path",
+  "request-id",
 ];
 const options = Object.fromEntries(
   strings.map((key) => [key, { type: "string" }]),
@@ -138,7 +139,7 @@ async function register() {
 }
 const help = {
   name: "agent-dispatch-hub",
-  version: "0.2.0",
+  version: "0.3.0",
   usage: "node bin/adh.mjs <command> [options]",
   commands: {
     doctor: "Inspect local readiness without dispatch or remote contact",
@@ -170,6 +171,10 @@ const help = {
     status: "[--target office]",
     dispatch:
       '--target office --workspace demo --text "task" [--timeout-ms 55000]',
+    "dispatch-readonly":
+      '--target office --workspace demo --text "review task" (enforced read/search only)',
+    changes:
+      "--job job-... [--request-id UUID]: reconcile target completion and read file change records",
     send: '--job job-... --text "follow-up"',
     wait: "--job job-... [--timeout-ms 55000]",
     messages: "--job job-...",
@@ -229,7 +234,7 @@ async function main() {
       targets = { ready: false, code: error.code ?? "invalid-config" };
     }
     print({
-      version: "0.2.0",
+      version: "0.3.0",
       node: process.version,
       nodeSupported: Number(process.versions.node.split(".")[0]) >= 22,
       git,
@@ -529,6 +534,10 @@ async function main() {
     print(await hub.receipt({ jobId: v.job }));
     return;
   }
+  if (p[0] === "changes") {
+    print(await hub.changes({ jobId: v.job, requestId: v["request-id"] }));
+    return;
+  }
   if (p[0] === "verify") {
     print(await hub.verify({ jobId: v.job }));
     return;
@@ -537,7 +546,7 @@ async function main() {
     print(await hub.readArtifact({ jobId: v.job, path: v.path }));
     return;
   }
-  if (p[0] === "dispatch") {
+  if (["dispatch", "dispatch-readonly"].includes(p[0])) {
     const workspace = v.workspace?.[0];
     print(
       await hub.dispatch({
@@ -545,6 +554,7 @@ async function main() {
         workspace,
         text: await taskText(),
         timeoutMs: timeout(),
+        capability: p[0] === "dispatch-readonly" ? "readonly" : "coding",
       }),
     );
     return;

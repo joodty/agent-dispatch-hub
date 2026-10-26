@@ -1,4 +1,4 @@
-# Placement and routing contract, v0.2
+# Placement and routing contract, v0.3
 
 CLI and MCP share `Hub`, the job store and adapter registry. Connections and
 credentials retain their v1 transport shape. New dispatch requires an explicit
@@ -6,6 +6,7 @@ instance binding and a v2 mapping; [v1](interface-contract-v1.md) remains readab
 for diagnosis and deliberate migration, with no implicit dispatch fallback.
 
 Schema and native DSH behavior: [PLACEMENT-V2.md](PLACEMENT-V2.md).
+Optional managed safety-run protocol: [SAFETY-V0.3.md](SAFETY-V0.3.md).
 Migration and installation: [README-PLACEMENT.md](README-PLACEMENT.md).
 Portable examples: [config.example.json](../examples/config.example.json).
 
@@ -39,6 +40,10 @@ is read-only and does not resume a session.
 
 MCP: `hub_targets`, `hub_status`, `hub_inspect`, `hub_dispatch`, `hub_send`,
 `hub_wait`, `hub_messages`, `hub_cancel`, `hub_verify`, `hub_artifact`.
+v0.3 adds `hub_dispatch_readonly` and `hub_changes`, and CLI `dispatch-readonly`
+and `changes --job ID [--request-id UUID]`. All use the original DSH transport.
+`wait` and `changes` may reconcile target-side bookkeeping and release verified
+completed leases; their MCP annotations are not read-only.
 Recovery tools: `hub_recover`, `hub_retry`, `hub_receipt`. Prompt IDs/cursors are
 persisted before admission, and the adapter must preserve both. An uncertain
 prompt blocks new sends; `retry` requires identical text and confirms the original
@@ -56,3 +61,20 @@ require explicit HTTPS and separately paired credentials. No probing of ports,
 browsers, other profiles or hosts. Grouping and task instructions grant no file
 permissions. DSH rc.3 lacks arbitrary per-session read/write root enforcement;
 `sandbox-required` is rejected.
+
+Companions may advertise `capabilities.safeRunsVersion:1`. Only new jobs opt in
+via `prepare({jobId,plan,safetyVersion:1,capability:'coding'|'readonly'})` and
+freeze that capability in `context.safety:{version:1,capability}`. The plan hash
+includes capability/version. Receipts retain these fields, `runAudit`, and any
+`runError`; older receipts keep their original behavior. Unsupported targets
+return `safety.supported:false` for coding and reject readonly before creating
+a session. Recovery resubmits the original frozen capability, never a default.
+
+Adapters and the authenticated target endpoint add `beginRun`, `finishRun`,
+`changes`, each taking `{jobId,sessionId,requestId}`. The target acquires the
+lease and baseline before the controller sends. Returns include run ownership,
+state, capability, roots, change-capture coverage and, when finished, changes.
+Only the target's observed DSH events/activity/inbox determine completion;
+clients cannot submit a `completed` boolean to release a lease. Neither prompt
+retry nor changes resends a model request. Historical request queries must
+match the original instance/job/session. Snapshots store metadata, not content.

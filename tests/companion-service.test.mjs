@@ -12,13 +12,16 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { PlacementService } from "../packages/dsh-companion/lib/service.mjs";
 import { planPlacement } from "../packages/dsh-companion/lib/placement.mjs";
 const id = (n) => `job-00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-async function fixture(t, { workspaceExists = true } = {}) {
+async function fixture(t, { workspaceExists = true, safety = false } = {}) {
   // Native DSH workspace records are canonical. Windows runners may expose
   // their temp directory through a short-name alias, so model that contract.
-  const base = await realpath(await mkdtemp(path.join(tmpdir(), "adh-placement-")));
+  const base = await realpath(
+    await mkdtemp(path.join(tmpdir(), "adh-placement-")),
+  );
   t.after(() => rm(base, { recursive: true, force: true }));
   const group = path.join(base, "group"),
     root = path.join(group, "tasks"),
@@ -35,6 +38,16 @@ async function fixture(t, { workspaceExists = true } = {}) {
   const sessions = new Map(),
     calls = [];
   const runtime = {
+    safetySupported: safety,
+    configureReadonly: async (sessionId) => {
+      calls.push("readonly");
+    },
+    observeRun: async () => ({
+      terminal: true,
+      quiescent: true,
+      userSeq: 2,
+      terminalSeq: 9,
+    }),
     listWorkspaces: async () => structuredClone(workspaces),
     createWorkspace: async (p, title) => {
       calls.push("workspace");
@@ -111,6 +124,79 @@ async function fixture(t, { workspaceExists = true } = {}) {
     calls,
   };
 }
+test("safe preparation freezes readonly capability separately from scope and rejects a downgrade on retry", async (t) => {
+  const f = await fixture(t, { safety: true });
+  assert.equal((await f.service.inspect()).capabilities.safeRunsVersion, 1);
+  const args = {
+    jobId: id(1),
+    plan: f.plan(1),
+    safetyVersion: 1,
+    capability: "readonly",
+  };
+  const prepared = await f.service.prepare(args);
+  assert.equal(prepared.context.safety.capability, "readonly");
+  assert.deepEqual(prepared.context.scope.write, [
+    prepared.context.execution.actualCwd,
+  ]);
+  assert.ok(f.calls.includes("readonly"));
+  await assert.rejects(f.service.prepare({ ...args, capability: "coding" }), {
+    code: "job-plan-conflict",
+  });
+  await assert.rejects(f.service.prepare({ jobId: id(1), plan: f.plan(1) }), {
+    code: "job-plan-conflict",
+  });
+});
+test("companion safe run captures a target artifact and retains source lock for overlapping jobs", async (t) => {
+  const f = await fixture(t, { safety: true });
+  const a = await f.service.prepare({
+    jobId: id(1),
+    plan: f.plan(1),
+    safetyVersion: 1,
+    capability: "coding",
+  });
+  const b = await f.service.prepare({
+    jobId: id(2),
+    plan: f.plan(2),
+    safetyVersion: 1,
+    capability: "coding",
+  });
+  const args = {
+    jobId: id(1),
+    sessionId: a.sessionId,
+    requestId: randomUUID(),
+  };
+  await f.service.beginRun(args);
+  await assert.rejects(
+    f.service.beginRun({
+      jobId: id(2),
+      sessionId: b.sessionId,
+      requestId: randomUUID(),
+    }),
+    { code: "source-locked" },
+  );
+  await writeFile(
+    path.join(a.context.execution.actualCwd, "artifact.txt"),
+    "test artifact",
+  );
+  const done = await f.service.changes(args);
+  assert.equal(done.state, "finished");
+  assert.equal(done.changes[0].path, "artifact.txt");
+  assert.equal(done.changes[0].change, "added");
+  assert.equal((await f.service.safeRuns.leases.list()).length, 0);
+});
+test("an unsupported runtime rejects safety preparation before creating a session", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(
+    f.service.prepare({
+      jobId: id(1),
+      plan: f.plan(1),
+      safetyVersion: 1,
+      capability: "readonly",
+    }),
+    { code: "safe-runs-unsupported" },
+  );
+  assert.equal(f.calls.length, 0);
+});
 test("prepare groups a new session, preserves independent effective cwd and records source/scopes", async (t) => {
   const f = await fixture(t);
   const a = await f.service.prepare({ jobId: id(1), plan: f.plan(1) }),
@@ -295,13 +381,25 @@ test("partial admission persists its known session; retries never create or move
   assert.equal(f.calls.filter((c) => c === "session").length, 1);
 });
 
-test("configured directory aliases retain their requested spelling and report canonical effective cwd",async t=>{
-  const f=await fixture(t);
-  const alias=path.join(f.base,"task-alias");
-  await symlink(f.root,alias,process.platform==="win32"?"junction":"dir");
-  const m=structuredClone(f.mapping);m.execution.root=alias;
-  const plan=f.plan(1,m);const admitted=await f.service.prepare({jobId:id(1),plan});
-  assert.equal(admitted.context.execution.requestedCwd,plan.execution.requestedCwd);
-  assert.equal(admitted.context.execution.actualCwd,path.join(f.root,path.basename(plan.execution.requestedCwd)));
-  await f.service.verify({jobId:id(1),sessionId:admitted.sessionId});
+test("configured directory aliases retain their requested spelling and report canonical effective cwd", async (t) => {
+  const f = await fixture(t);
+  const alias = path.join(f.base, "task-alias");
+  await symlink(
+    f.root,
+    alias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const m = structuredClone(f.mapping);
+  m.execution.root = alias;
+  const plan = f.plan(1, m);
+  const admitted = await f.service.prepare({ jobId: id(1), plan });
+  assert.equal(
+    admitted.context.execution.requestedCwd,
+    plan.execution.requestedCwd,
+  );
+  assert.equal(
+    admitted.context.execution.actualCwd,
+    path.join(f.root, path.basename(plan.execution.requestedCwd)),
+  );
+  await f.service.verify({ jobId: id(1), sessionId: admitted.sessionId });
 });

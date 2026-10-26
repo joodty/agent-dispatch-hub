@@ -7,11 +7,30 @@ import { HubError } from "./core/state.mjs";
 export function createMcpServer({ home, hub = new Hub({ home }) }) {
   const server = new McpServer({
     name: "agent-dispatch-hub",
-    version: "0.2.0",
+    version: "0.3.0",
   });
   const timeout = z.number().int().min(1000).max(300000).optional();
   const target = z.string().optional();
   const definitions = [
+    [
+      "hub_dispatch_readonly",
+      "Dispatch a permanently readonly DSH session with read/search tools only; requires a capable companion",
+      {
+        target,
+        workspace: z.string(),
+        text: z.string().min(1),
+        timeoutMs: timeout,
+      },
+      (args) => hub.dispatch({ ...args, capability: "readonly" }),
+      false,
+    ],
+    [
+      "hub_changes",
+      "Reconcile the original target run, capture bounded file metadata changes and release its lease only on verified completion",
+      { jobId: z.string(), requestId: z.string().optional() },
+      (args) => hub.changes(args),
+      false,
+    ],
     [
       "hub_recover",
       "Recover an uncertain placement using the original job ID and frozen plan; sends no model prompt",
@@ -89,10 +108,10 @@ export function createMcpServer({ home, hub = new Hub({ home }) }) {
     ],
     [
       "hub_wait",
-      "Wait for the request belonging to this job; retain jobId after a timeout",
+      "Wait for this job's request and reconcile its target audit/lease; retain jobId after a timeout",
       { jobId: z.string(), timeoutMs: timeout },
       (args) => hub.operate("wait", args),
-      true,
+      false,
     ],
     [
       "hub_messages",
