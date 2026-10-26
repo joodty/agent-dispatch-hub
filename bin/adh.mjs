@@ -53,6 +53,8 @@ const strings = [
   "mapping-file",
   "path",
   "request-id",
+  "question-id",
+  "max-questions",
 ];
 const options = Object.fromEntries(
   strings.map((key) => [key, { type: "string" }]),
@@ -170,12 +172,16 @@ const help = {
       "--job job-...: read the controller receipt, including retained backend completion after placement drift",
     status: "[--target office]",
     dispatch:
-      '--target office --workspace demo --text "task" [--timeout-ms 55000]',
+      '--target office --workspace demo --text "task" [--timeout-ms 55000 --max-questions 5]',
     "dispatch-readonly":
-      '--target office --workspace demo --text "review task" (enforced read/search only)',
+      '--target office --workspace demo --text "review task" [--max-questions 5] (enforced read/search only)',
     changes:
       "--job job-... [--request-id UUID]: reconcile target completion and read file change records",
     send: '--job job-... --text "follow-up"',
+    questions:
+      "--job job-...: read recorded DSH questions and answer admissions",
+    answer:
+      '--job job-... --question-id question-... --text "decision": resume the original session; identical repeats never resend',
     wait: "--job job-... [--timeout-ms 55000]",
     messages: "--job job-...",
     cancel: "--job job-...",
@@ -555,6 +561,27 @@ async function main() {
         text: await taskText(),
         timeoutMs: timeout(),
         capability: p[0] === "dispatch-readonly" ? "readonly" : "coding",
+        ...(v["max-questions"] === undefined
+          ? {}
+          : {
+              maxQuestions: /^\d+$/.test(v["max-questions"])
+                ? Number(v["max-questions"])
+                : NaN,
+            }),
+      }),
+    );
+    return;
+  }
+  if (p[0] === "questions") {
+    print(await hub.questions({ jobId: v.job }));
+    return;
+  }
+  if (p[0] === "answer") {
+    print(
+      await hub.answer({
+        jobId: v.job,
+        questionId: v["question-id"],
+        text: await taskText(),
       }),
     );
     return;

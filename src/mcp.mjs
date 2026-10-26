@@ -20,6 +20,7 @@ export function createMcpServer({ home, hub = new Hub({ home }) }) {
         workspace: z.string(),
         text: z.string().min(1),
         timeoutMs: timeout,
+        maxQuestions: z.number().int().min(0).max(10).optional(),
       },
       (args) => hub.dispatch({ ...args, capability: "readonly" }),
       false,
@@ -89,12 +90,13 @@ export function createMcpServer({ home, hub = new Hub({ home }) }) {
     ],
     [
       "hub_dispatch",
-      "Dispatch into a mapped workspace. Return and retain jobId for follow-ups. A timed out task may still run.",
+      "Dispatch into a mapped workspace. Retain jobId. A needs_input result is a DSH question: answer it with hub_answer, then hub_wait. A timed out task may still run.",
       {
         target,
         workspace: z.string(),
         text: z.string().min(1),
         timeoutMs: timeout,
+        maxQuestions: z.number().int().min(0).max(10).optional(),
       },
       (args) => hub.dispatch(args),
       false,
@@ -108,9 +110,27 @@ export function createMcpServer({ home, hub = new Hub({ home }) }) {
     ],
     [
       "hub_wait",
-      "Wait for this job's request and reconcile its target audit/lease; retain jobId after a timeout",
+      "Wait for this job's request and reconcile its target audit/lease. On needs_input, inspect question and use hub_answer, then wait again. Retain jobId after a timeout.",
       { jobId: z.string(), timeoutMs: timeout },
       (args) => hub.operate("wait", args),
+      false,
+    ],
+    [
+      "hub_questions",
+      "Read durable questions and answer admissions for a job. Call hub_wait first to discover new DSH replies. Does not contact or wake a model.",
+      { jobId: z.string() },
+      (args) => hub.questions(args),
+      true,
+    ],
+    [
+      "hub_answer",
+      "Answer this job's pending question by questionId and continue its original DSH session. Identical repeats never resend. Handle within existing authority; ask the human for decisions beyond it. Follow with hub_wait.",
+      {
+        jobId: z.string(),
+        questionId: z.string(),
+        text: z.string().min(1).max(12000),
+      },
+      (args) => hub.answer(args),
       false,
     ],
     [

@@ -19,6 +19,8 @@ v0.3.0 只包含 DSH 适配器。这不是 Codex 原生子代理，也不会自�
 
 新版增加独立只读派工、目标端源码并发租约和有边界的文件变更记录，保留原有 DSH 接入方式。能力、升级和异常接手见 [安全执行说明](docs/README-SAFETY.md)；真实模型验收状态见 [v0.3 验证记录](docs/VALIDATION-V0.3.md)。
 
+新增 [任务内提问与回答](docs/README-QUESTIONS.md)：DSH 遇到关键歧义时返回 `needs_input`，Codex 通过 `hub_answer` 回答，同一会话继续执行。问题和答案可恢复、可核对，重复回答不会重复派发。该回复协议兼容已有 placement 目标，无需为它更新 DSH 插件。
+
 旧配置升级先读 [工作区与迁移说明](docs/README-PLACEMENT.md)。工作区归组与文件权限分别处理；当前读写范围作为明确的任务指令，不声称任意目录的沙箱强制隔离。
 
 ## 开始使用
@@ -45,6 +47,7 @@ node bin/adh.mjs dispatch-readonly --target office --workspace demo --text "检�
 | 配置本机、远程目标或处理配对 | [连接与配置](docs/README-CONNECTIONS.md) |
 | 设置归属、独立任务目录及迁移旧配置 | [工作区与迁移](docs/README-PLACEMENT.md) |
 | 只读调查、源码锁、文件记录及升级 | [安全执行](docs/README-SAFETY.md) |
+| 执行者提问、负责人回答及继续原任务 | [任务内提问](docs/README-QUESTIONS.md) |
 | 修改代码、增加后端适配器 | [开发说明](docs/README-DEVELOPMENT.md) |
 | 安装失败、连接失败、任务异常 | [故障排查](docs/README-TROUBLESHOOTING.md) |
 | 查看依赖来源和许可边界 | [第三方说明](docs/THIRD-PARTY.md) |

@@ -2,6 +2,8 @@
 
 v0.3 的安全运行契约见 [安全执行实现](SAFETY-V0.3.md)。并发租约与快照在目标端，Hub 先持久化请求，再取得 `beginRun` 确认后发提示。结束核对与文件记录先于结束时的目录核验；不以客户端声明、超时或取消代替真实终止。旧会话不自动迁移为安全任务。
 
+[任务内提问](README-QUESTIONS.md) 由 Hub 控制：`questions.mjs` 生成和验证回复格式，`decisions.mjs` 从原请求的最终消息中识别并保存问题，`Hub.answer` 持久化答案后沿原会话提交。目标端不增加 HTTP 接口。原始 `backendResult.completed` 表示这一轮完成，用户看到的 `result.completed:false` 表示问题尚待处理；审计仍依据真实目标活动核验。
+
 v0.2 的配置、准备和回执契约见 [接口说明](interface-contract.md)；DSH 原生约束、权限边界与迁移见 [工作区说明](README-PLACEMENT.md)。纯目标路径校验与目标端目录准入放在 `packages/dsh-companion/lib`，CLI/MCP 共享配置和任务路由。远程路径只作目标风格计算，真实路径操作只在目标端进行。
 
 开发入口是 Node.js 22+ 的 ESM 项目。先读仓库 [AGENTS.md](../AGENTS.md) 和 [接口契约](interface-contract.md)，安装依赖后运行测试。修改连接、认证或工作区路由时，同时核对 [连接说明](README-CONNECTIONS.md)。
