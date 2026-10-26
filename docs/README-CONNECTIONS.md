@@ -37,11 +37,13 @@ DSH 的 profile 与 hub 的 target 不同：profile 由 DSH 管理，target 是 
 
 `baseUrl` 必须使用 HTTPS，证书按系统正常规则验证。`credentialFile` 位于运行 hub 的机器，工作区路径则位于远程 DSH 所在机器；不能用本机项目路径替代它。Windows 可使用 JSON 转义后的绝对路径，例如 `C:\\work\\demo`，具体格式须符合实际目标系统。
 
+`credentialFile` 必须是当前实际 `<ADH_HOME>/credentials/<target名称>.json`；示例里的 `/absolute/user-state` 代表你的整个 Hub 状态目录，不能另选一处目录。优先执行 `setup remote` 自动生成配置，避免手写路径与 `--home` 不一致。
+
 远程 DSH 服务需由环境管理者先部署并提供地址及登录方式。`setup remote` 只配置本机 hub 目标和 MCP 注册，不安装或修改远程服务器。
 
 ## 配对与凭据
 
-运行 `node bin/adh.mjs target pair home`，通过 stdin 或 `--from-file <受保护文件路径>` 提供该服务的 launch URL。配对在配置的精确 origin 上交换认证，私下保存服务签发的 Cookie；不能把认证 URL 放到命令参数、截图、仓库或报告中。
+先运行 `node bin/adh.mjs target pair home --prepare-input`，把该服务的 launch URL 写入返回的私有空文件，再运行 `target pair home --from-file "<inputFile>"`。该受管文件配对成功后会删除；输入不得位于任何 Git 工作树。stdin 支持受保护管道输入，交互终端不会接受明文 URL。配对在配置的精确 origin 上交换认证，私下保存服务签发的 Cookie；不能把认证 URL 放到命令参数、截图、仓库或报告中。
 
 origin 包括协议、主机和端口。为某个 origin 获取的 Cookie 或 token 只能用于该 origin，不可带到另一个主机、端口或协议。HTTP 被拒绝；不要用关闭 TLS 校验处理证书故障。
 

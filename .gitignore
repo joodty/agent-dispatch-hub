@@ -6,3 +6,9 @@ coverage/
 .env
 *.local.json
 credentials/
+/config.json
+/bootstrap.json
+/dependencies/
+/jobs/
+/.agent-dispatch-hub/
+*launch-url*

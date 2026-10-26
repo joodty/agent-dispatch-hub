@@ -23,6 +23,11 @@ import {
 import { Hub } from "../src/core/hub.mjs";
 import { pairTarget } from "../src/core/pair.mjs";
 import {
+  preparePairInput,
+  readPairInput,
+  consumePairInput,
+} from "../src/core/pair-input.mjs";
+import {
   discoverLocal,
   installDshCompanions,
   registerCodexMcp,
@@ -49,7 +54,7 @@ const options = Object.fromEntries(
   strings.map((key) => [key, { type: "string" }]),
 );
 options.workspace = { type: "string", multiple: true };
-for (const key of ["help", "dry-run", "skip-register"])
+for (const key of ["help", "dry-run", "skip-register", "prepare-input"])
   options[key] = { type: "boolean" };
 let parsed;
 try {
@@ -102,8 +107,9 @@ const taskText = async () =>
   v["text-file"] ? await readFile(resolve(v["text-file"]), "utf8") : v.text;
 async function stdinText() {
   if (process.stdin.isTTY)
-    process.stderr.write(
-      "Paste the authenticated DSH launch URL, then end input (Ctrl+Z Enter on Windows; Ctrl+D on macOS/Linux). Input is not logged by the hub.\n",
+    throw new HubError(
+      "protected-input-required",
+      "Use target pair --prepare-input and --from-file, or pipe protected input through stdin. Interactive terminal input is disabled to avoid echoing the launch URL.",
     );
   let value = "";
   for await (const chunk of process.stdin) {
@@ -141,7 +147,7 @@ const help = {
     "target list": "List names and workspace names; no secrets",
     "target use": "target use office",
     "target pair":
-      "target pair home [--from-file protected-launch-url.txt]; otherwise reads stdin",
+      "target pair home --prepare-input; then --from-file <protected file outside Git>; otherwise reads stdin",
     status: "[--target office]",
     dispatch:
       '--target office --workspace demo --text "task" [--timeout-ms 55000]',
@@ -161,6 +167,13 @@ async function main() {
     print(help);
     return;
   }
+  const expectedCount =
+    p[0] === "target" ? (p[1] === "list" ? 2 : 3) : p[0] === "setup" ? 2 : 1;
+  if (p.length !== expectedCount)
+    throw new HubError(
+      "invalid-arguments",
+      "Unexpected positional arguments. Quote paths containing spaces and consult --help.",
+    );
   if (p[0] === "mcp") {
     const { startMcp } = await import("../src/mcp.mjs");
     await startMcp(home);
@@ -227,10 +240,26 @@ async function main() {
     }
     if (p[1] === "pair") {
       const name = validName(p[2], "target");
+      const target = await hub.target(name);
+      if (target.connection.kind !== "remote")
+        throw new HubError(
+          "invalid-target",
+          "Pairing is only for a remote target.",
+        );
+      if (v["prepare-input"]) {
+        print(await preparePairInput(home, name));
+        return;
+      }
       const input = v["from-file"]
-        ? await readFile(resolve(v["from-file"]), "utf8")
-        : await stdinText();
-      print(await pairTarget(home, name, input));
+        ? await readPairInput(home, v["from-file"])
+        : null;
+      const result = await pairTarget(
+        home,
+        name,
+        input ? input.text : await stdinText(),
+      );
+      await consumePairInput(input);
+      print(result);
       return;
     }
     throw new HubError(

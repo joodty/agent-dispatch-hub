@@ -90,11 +90,11 @@ const PLACEHOLDER_FIRST_SEGMENTS = new Set([
   'abs', 'absolute', 'path', 'paths', 'tmp', 'temp', 'data', 'media', 'target', 'sample',
 ]);
 
-/** 明显是测试假数据或占位物的行内标记，避免 dummy 值误报。 */
+/** 明显是测试假数据或占位物的行内标记，避免 dummy 值误报；只用于抑制已命中的规则。 */
 const DUMMY_MARKERS = [
-  'release-check:ignore', 'example', 'placeholder', 'dummy', 'sample', 'changeme', 'change-me',
-  'do-not-print', 'not-a-real', 'redacted', 'masked', 'secret-token-value', 'nonsecret',
-  'repeat(', 'process.env', 'os.environ', 'xxx', '{{', '${', 'invalid', 'fake', 'mock', 'todo',
+  'placeholder', 'dummy', 'changeme', 'change-me', 'do-not-print', 'not-a-real',
+  'redacted', 'masked', 'secret-token-value', 'nonsecret', 'repeat(', 'process.env',
+  'os.environ', 'xxxxxxxx', '{{', '${',
 ];
 
 // ---------------------------------------------------------------- 规则定义
@@ -111,7 +111,7 @@ const PERSONAL_PATH_RULES = [
 const ENDPOINT_RULES = [
   { code: 'url-with-credentials', bucket: 'endpoints', severity: 'error', re: /\b(?:https?|wss?|ftp):\/\/[^\s/:@]+:[^\s/@]+@/iu },
   { code: 'url-query-secret', bucket: 'endpoints', severity: 'error', re: /[?&](?:token|access_token|refresh_token|api_key|apikey|password|passwd|signature|auth)=\S{16,}/i },
-  { code: 'endpoint-ipv4-literal', bucket: 'endpoints', severity: 'error', re: /\b(?:https?|wss?|ftp):\/\/(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?\b/iu },
+  { code: 'endpoint-ipv4-literal', bucket: 'endpoints', severity: 'error', re: /\b(?:https?|wss?|ftp):\/\/(?!(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0)(?::\d{2,5})?\b)(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?\b/iu },
   { code: 'loopback-endpoint-with-port', bucket: 'endpoints', severity: 'warn', re: /\b(?:127\.0\.0\.1|\[::1\]|localhost):\d{2,5}\b/iu },
 ];
 
@@ -125,6 +125,10 @@ const SECRET_RULES = [
 ];
 
 const ALL_RULES = [...PERSONAL_PATH_RULES, ...ENDPOINT_RULES, ...SECRET_RULES];
+// placeholderAware 规则需要逐个匹配，避免整行只看第一个盘符路径。
+for (const rule of ALL_RULES) {
+  if (rule.placeholderAware) rule.reGlobal = new RegExp(rule.re.source, `${rule.re.flags}g`);
+}
 const URL_PATTERN = /\b(?:https?|wss?|ftp):\/\/[^\s"'`<>()\[\]{}|]+/giu;
 
 // ---------------------------------------------------------------- 结果收集
@@ -141,7 +145,7 @@ function createContext(root) {
 }
 
 function push(ctx, entry, bucket) {
-  const key = `${entry.code}\u0000${entry.file ?? ''}\u0000${entry.line ?? ''}`;
+  const key = `${entry.code}\u0000${entry.file ?? ''}\u0000${entry.line ?? ''}\u0000${entry.message}`;
   if (ctx.seenKeys.has(key)) return;
   if ((ctx.seenCodes.get(entry.code) ?? 0) >= MAX_REPORTED_PER_CODE) {
     ctx.seenCodes.set(`${entry.code}\u0000truncated`, true);
@@ -270,11 +274,11 @@ async function checkPackageVersions(ctx) {
     { missing: 'package.json 缺失。', unparseable: 'package.json 不是有效 JSON（仅报告位置，不回显内容片段）。' });
   if (!pkg) return;
   if (typeof pkg.version !== 'string' || !pkg.version) {
-    addError(ctx, 'package-versions', 'package-version-missing', 'package.json 缺少 version 字段。');
+    addError(ctx, 'package-versions', 'package-version-missing', 'package.json 缺少 version 字段。', { file: 'package.json' });
   }
   const engines = typeof pkg.engines?.node === 'string' ? pkg.engines.node : undefined;
-  if (!engines) addWarning(ctx, 'package-versions', 'engines-node-unspecified', 'package.json 未声明 engines.node。');
-  else if (!/(^|[^\d])(2[2-9]|[3-9]\d)(\D|$)/.test(engines)) addWarning(ctx, 'package-versions', 'engines-node-unexpected', 'engines.node 未覆盖 Node 22 及以上。');
+  if (!engines) addWarning(ctx, 'package-versions', 'engines-node-unspecified', 'package.json 未声明 engines.node。', { file: 'package.json' });
+  else if (!/(^|[^\d])(2[2-9]|[3-9]\d)(\D|$)/.test(engines)) addWarning(ctx, 'package-versions', 'engines-node-unexpected', 'engines.node 未覆盖 Node 22 及以上。', { file: 'package.json' });
 
   const packageJsonPath = rel(ctx, packageFile);
   for (const [label, value] of [['scripts.check', pkg.scripts?.check], ['bin', typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.adh]]) {
@@ -296,14 +300,14 @@ async function checkPackageVersions(ctx) {
   if (!lock) return;
   const roots = [['version', lock.version], ['packages[""].version', lock.packages?.['']?.version]].filter(([, value]) => typeof value === 'string');
   if (!roots.length) {
-    addError(ctx, 'package-versions', 'lock-version-missing', 'package-lock.json 未记录根版本。');
+    addError(ctx, 'package-versions', 'lock-version-missing', 'package-lock.json 未记录根版本。', { file: 'package-lock.json' });
     return;
   }
   for (const [where, value] of roots) {
-    if (pkg.version !== value) addError(ctx, 'package-versions', 'version-mismatch', `根版本不一致：package.json=${pkg.version ?? 'missing'}，package-lock.json(${where})=${value}。`);
+    if (pkg.version !== value) addError(ctx, 'package-versions', 'version-mismatch', `根版本不一致：package.json=${pkg.version ?? 'missing'}，package-lock.json(${where})=${value}。`, { file: 'package-lock.json' });
   }
   if (typeof lock.name === 'string' && typeof pkg.name === 'string' && lock.name !== pkg.name) {
-    addError(ctx, 'package-versions', 'package-name-mismatch', `包名不一致：package.json=${pkg.name}，package-lock.json=${lock.name}。`);
+    addError(ctx, 'package-versions', 'package-name-mismatch', `包名不一致：package.json=${pkg.name}，package-lock.json=${lock.name}。`, { file: 'package-lock.json' });
   }
 }
 
@@ -315,43 +319,44 @@ function nodeScriptTarget(script) {
 // ---------------------------------------------------------------- 检查 2：依赖锁
 
 async function checkDependencyLock(ctx) {
+  const lockFile = rel(ctx, join(ctx.root, 'dependencies.lock.json'));
   const lock = await readJsonFile(ctx, join(ctx.root, 'dependencies.lock.json'), 'dependency-lock',
     'dependency-lock-missing', 'dependency-lock-unparseable',
     { missing: 'dependencies.lock.json 缺失：无法固定外部来源与提交号，bootstrap/doctor 会失败。', unparseable: 'dependencies.lock.json 不是有效 JSON（仅报告位置，不回显内容片段）。' });
   if (!lock) return;
   const sources = lock.sources;
   if (!sources || typeof sources !== 'object' || Array.isArray(sources)) {
-    addError(ctx, 'dependency-lock', 'dependency-lock-sources-missing', 'dependencies.lock.json 缺少 sources 对象。');
+    addError(ctx, 'dependency-lock', 'dependency-lock-sources-missing', 'dependencies.lock.json 缺少 sources 对象。', { file: lockFile });
     return;
   }
   const names = Object.keys(sources);
-  if (!names.length) addError(ctx, 'dependency-lock', 'dependency-lock-empty', 'dependencies.lock.json 的 sources 为空。');
+  if (!names.length) addError(ctx, 'dependency-lock', 'dependency-lock-empty', 'dependencies.lock.json 的 sources 为空。', { file: lockFile });
   for (const required of REQUIRED_DEPENDENCY_SOURCES) {
-    if (!names.includes(required)) addError(ctx, 'dependency-lock', 'dependency-lock-missing-source', `依赖锁缺少必需来源：${required}。`, { source: required });
+    if (!names.includes(required)) addError(ctx, 'dependency-lock', 'dependency-lock-missing-source', `依赖锁缺少必需来源：${required}。`, { file: lockFile, source: required });
   }
   for (const [name, source] of Object.entries(sources)) {
-    if (!SOURCE_NAME_PATTERN.test(name)) addError(ctx, 'dependency-lock', 'dependency-name-invalid', `来源名不符合 bootstrap 允许的形式：${name}。`, { source: name });
+    if (!SOURCE_NAME_PATTERN.test(name)) addError(ctx, 'dependency-lock', 'dependency-name-invalid', `来源名不符合 bootstrap 允许的形式：${name}。`, { file: lockFile, source: name });
     if (!source || typeof source !== 'object') {
-      addError(ctx, 'dependency-lock', 'dependency-source-invalid', `来源 ${name} 不是对象。`, { source: name });
+      addError(ctx, 'dependency-lock', 'dependency-source-invalid', `来源 ${name} 不是对象。`, { file: lockFile, source: name });
       continue;
     }
     if (typeof source.url !== 'string' || !source.url) {
-      addError(ctx, 'dependency-lock', 'dependency-url-missing', `来源 ${name} 缺少 url。`, { source: name });
+      addError(ctx, 'dependency-lock', 'dependency-url-missing', `来源 ${name} 缺少 url。`, { file: lockFile, source: name });
     } else if (!GITHUB_URL_PATTERN.test(source.url)) {
       const kind = /^git@/u.test(source.url) ? 'SSH 形式'
         : /^git:\/\//u.test(source.url) ? 'git 协议'
           : /^https?:\/\//u.test(source.url) && !/^https:\/\/github\.com\//u.test(source.url) ? '非 GitHub 主机'
             : /^http:\/\//u.test(source.url) ? '非 HTTPS'
               : 'GitHub 路径形态不符';
-      addError(ctx, 'dependency-lock', 'dependency-url-not-github-https', `来源 ${name} 的 url 未固定为 GitHub HTTPS 仓库地址（${kind}）。`, { source: name });
+      addError(ctx, 'dependency-lock', 'dependency-url-not-github-https', `来源 ${name} 的 url 未固定为 GitHub HTTPS 仓库地址（${kind}）。`, { file: lockFile, source: name });
     }
     if (typeof source.commit !== 'string' || !source.commit) {
-      addError(ctx, 'dependency-lock', 'dependency-commit-missing', `来源 ${name} 缺少完整提交号 commit。`, { source: name });
+      addError(ctx, 'dependency-lock', 'dependency-commit-missing', `来源 ${name} 缺少完整提交号 commit。`, { file: lockFile, source: name });
     } else if (!FULL_SHA_PATTERN.test(source.commit)) {
       const reason = /^[0-9a-f]+$/u.test(source.commit) ? `长度为 ${source.commit.length}，不是完整 40 位` : '含非小写十六进制字符';
-      addError(ctx, 'dependency-lock', 'dependency-commit-not-full-sha', `来源 ${name} 的 commit 不是完整 40 位小写 Git SHA（${reason}）。`, { source: name });
+      addError(ctx, 'dependency-lock', 'dependency-commit-not-full-sha', `来源 ${name} 的 commit 不是完整 40 位小写 Git SHA（${reason}）。`, { file: lockFile, source: name });
     }
-    if (!source.upstream || !source.license) addWarning(ctx, 'dependency-lock', 'dependency-license-unrecorded', `来源 ${name} 未记录 upstream 或 license，第三方说明无法核对。`, { source: name });
+    if (!source.upstream || !source.license) addWarning(ctx, 'dependency-lock', 'dependency-license-unrecorded', `来源 ${name} 未记录 upstream 或 license，第三方说明无法核对。`, { file: lockFile, source: name });
   }
 }
 
@@ -446,11 +451,6 @@ async function checkMarkdownLinks(ctx) {
 
 // ---------------------------------------------------------------- 检查 5：本机路径/端点/凭证扫描
 
-function firstSegmentOfDrivePath(line) {
-  const match = /[A-Za-z]:[\\/]{1,2}([\w. +-]{2,64})/u.exec(line);
-  return match?.[1]?.trim().toLowerCase();
-}
-
 function ruleApplies(rule, markdown) {
   if (rule.markdownOnly) return markdown;
   if (rule.nonMarkdown) return !markdown;
@@ -472,11 +472,15 @@ function scanLines(ctx, path, text, markdown) {
     }
     for (const rule of ALL_RULES) {
       if (!ruleApplies(rule, markdown)) continue;
-      if (!rule.re.test(line)) continue;
       if (rule.placeholderAware) {
-        const segment = firstSegmentOfDrivePath(line);
-        if (segment && PLACEHOLDER_FIRST_SEGMENTS.has(segment)) continue;
-      }
+        // 逐个匹配判断：一行里同时出现占位路径与真实本机路径时，仍然要报出来。
+        const matches = [...line.matchAll(rule.reGlobal)];
+        if (!matches.length) continue;
+        if (matches.every(match => {
+          const segment = /[A-Za-z]:[\\/]{1,2}([\w. +-]{2,64})/u.exec(match[0])?.[1]?.trim().toLowerCase();
+          return segment && PLACEHOLDER_FIRST_SEGMENTS.has(segment);
+        })) continue;
+      } else if (!rule.re.test(line)) continue;
       if (looksDummy(line)) continue;
       const message = rule.bucket === 'secrets' ? '命中凭证格式规则，仅报告文件、行号与规则编号。'
         : rule.bucket === 'endpoints' ? '命中端点规则。' : '命中本机路径规则。';

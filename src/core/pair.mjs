@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Hub } from "./hub.mjs";
 import { privateDirectory, atomicJson, HubError } from "./state.mjs";
 
@@ -13,6 +13,15 @@ export async function pairTarget(
     throw new HubError(
       "invalid-target",
       "Pairing is only for explicitly configured remote targets.",
+    );
+  const file = join(home, "credentials", name + ".json");
+  if (
+    typeof target.connection.credentialFile !== "string" ||
+    resolve(target.connection.credentialFile) !== resolve(file)
+  )
+    throw new HubError(
+      "invalid-target",
+      "Credential file must be the hub-managed file for this target. Use setup remote to generate it.",
     );
   let url;
   try {
@@ -76,12 +85,6 @@ export async function pairTarget(
       "DSH returned no valid browser session cookie.",
     );
   await privateDirectory(join(home, "credentials"));
-  const file = join(home, "credentials", name + ".json");
-  if (target.connection.credentialFile !== file)
-    throw new HubError(
-      "invalid-target",
-      "Credential file must be the hub-managed file for this target.",
-    );
   await atomicJson(file, {
     version: 1,
     origin: origin.origin,

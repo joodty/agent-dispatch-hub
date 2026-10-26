@@ -1,5 +1,16 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve, join, isAbsolute, win32, posix } from "node:path";
+import {
+  dirname,
+  resolve,
+  join,
+  isAbsolute,
+  win32,
+  posix,
+  parse,
+  relative,
+} from "node:path";
+import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -14,7 +25,29 @@ export class HubError extends Error {
 }
 export const run = promisify(execFile);
 export function stateHome(value = process.env.ADH_HOME) {
-  return resolve(value || join(homedir(), ".agent-dispatch-hub"));
+  const path = resolve(value || join(homedir(), ".agent-dispatch-hub"));
+  const source = fileURLToPath(new URL("../../", import.meta.url));
+  const part = relative(source, path);
+  if (
+    path === parse(path).root ||
+    path === homedir() ||
+    part === "" ||
+    (!part.startsWith("..") && !isAbsolute(part))
+  )
+    throw new HubError(
+      "invalid-home",
+      "Use a dedicated state directory outside this source repository, not a drive root or your entire home directory.",
+    );
+  for (let directory = path; ; directory = dirname(directory)) {
+    if (existsSync(join(directory, ".git")))
+      throw new HubError(
+        "invalid-home",
+        "Keep hub state and credentials outside every Git work tree.",
+      );
+    const parent = dirname(directory);
+    if (parent === directory) break;
+  }
+  return path;
 }
 export function validName(value, label = "name") {
   if (
