@@ -30,4 +30,12 @@
 
 排查配置时只查看必要字段。目标名称、错误码等通常足够定位路由问题；token、Cookie、完整认证链接及含密钥的 URL 查询参数应始终隐藏。
 
+## DSH 正在等待负责人回答
+
+`needs_input` 表示当前轮次结束，但任务没有完成。读取 `questions --job <id>` 或 `hub_questions`，用 `answer --question-id <id>` / `hub_answer` 回答，再 `wait`。`question-pending` 表示普通 `send` 试图跳过待答问题。
+
+`answer-conflict` 表示该问题已保存不同答案，不再次发送；先核对原记录。`answer-admission-uncertain` 或回答时的 `prompt-admission-uncertain` 要保留原 job/question/request ID，继续等待或用相同 `answer` 参数只核对原提交；不要创建新会话重发。`question_error` 要查看保留的原始结果和请求标识，不能当作成功。`question_limit_reached` 需要负责人检查任务拆分，不自动循环问答。原生锁或审计错误仍按上表处理，回答不绕过它们。
+
+`hub_questions` 只读取已经识别并持久化的内容，DSH 有新回复时先调用 `hub_wait`。旧任务未启用协议、用了 DSH 原生提问工具，或主会话已经空闲时，不会自动变成此问答流程。范围与兼容说明见 [任务内提问](README-QUESTIONS.md)。
+
 远程主机目录、账号登录和服务部署情况不能由本机 hub 凭空得知。缺少这些信息时，明确列出所需环境信息，请用户或远程管理者补充，然后继续尚未完成的验收。

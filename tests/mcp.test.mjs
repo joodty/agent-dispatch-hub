@@ -16,6 +16,13 @@ test("one generic MCP surface routes requests and returns recoverable failures w
         token: "do-not-print",
       });
     },
+    questions: async ({ jobId }) => ({ jobId, questions: [] }),
+    answer: async ({ jobId, questionId, text }) => ({
+      jobId,
+      questionId,
+      accepted: true,
+      echoedAnswer: text,
+    }),
   };
   const server = createMcpServer({ hub });
   const client = new Client({ name: "adh-test", version: "1" });
@@ -27,8 +34,40 @@ test("one generic MCP surface routes requests and returns recoverable failures w
     await server.close();
   });
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 13);
+  assert.equal(listed.tools.length, 15);
   assert.ok(listed.tools.every((tool) => tool.name.startsWith("hub_")));
+  assert.equal(
+    listed.tools.find((t) => t.name === "hub_questions").annotations
+      .readOnlyHint,
+    true,
+  );
+  assert.equal(
+    listed.tools.find((t) => t.name === "hub_answer").annotations.readOnlyHint,
+    false,
+  );
+  const questions = await client.callTool({
+    name: "hub_questions",
+    arguments: { jobId: "job-example" },
+  });
+  assert.deepEqual(questions.structuredContent.questions, []);
+  const answer = await client.callTool({
+    name: "hub_answer",
+    arguments: {
+      jobId: "job-example",
+      questionId: "question-example",
+      text: "Use A",
+    },
+  });
+  assert.equal(answer.structuredContent.accepted, true);
+  const invalidAnswer = await client.callTool({
+    name: "hub_answer",
+    arguments: {
+      jobId: "job-example",
+      questionId: "question-example",
+      text: "x".repeat(12001),
+    },
+  });
+  assert.equal(invalidAnswer.isError, true);
   assert.equal(
     (
       await client.callTool({

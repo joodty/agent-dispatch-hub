@@ -52,6 +52,8 @@ const strings = [
   "from-file",
   "mapping-file",
   "path",
+  "question-id",
+  "max-questions",
 ];
 const options = Object.fromEntries(
   strings.map((key) => [key, { type: "string" }]),
@@ -138,7 +140,7 @@ async function register() {
 }
 const help = {
   name: "agent-dispatch-hub",
-  version: "0.2.0",
+  version: "0.2.1",
   usage: "node bin/adh.mjs <command> [options]",
   commands: {
     doctor: "Inspect local readiness without dispatch or remote contact",
@@ -169,8 +171,12 @@ const help = {
       "--job job-...: read the controller receipt, including retained backend completion after placement drift",
     status: "[--target office]",
     dispatch:
-      '--target office --workspace demo --text "task" [--timeout-ms 55000]',
+      '--target office --workspace demo --text "task" [--timeout-ms 55000 --max-questions 5]',
     send: '--job job-... --text "follow-up"',
+    questions:
+      "--job job-...: read recorded DSH questions and answer admissions",
+    answer:
+      '--job job-... --question-id question-... --text "decision": resume the original session; identical repeats never resend',
     wait: "--job job-... [--timeout-ms 55000]",
     messages: "--job job-...",
     cancel: "--job job-...",
@@ -229,7 +235,7 @@ async function main() {
       targets = { ready: false, code: error.code ?? "invalid-config" };
     }
     print({
-      version: "0.2.0",
+      version: "0.2.1",
       node: process.version,
       nodeSupported: Number(process.versions.node.split(".")[0]) >= 22,
       git,
@@ -545,6 +551,28 @@ async function main() {
         workspace,
         text: await taskText(),
         timeoutMs: timeout(),
+
+        ...(v["max-questions"] === undefined
+          ? {}
+          : {
+              maxQuestions: /^\d+$/.test(v["max-questions"])
+                ? Number(v["max-questions"])
+                : NaN,
+            }),
+      }),
+    );
+    return;
+  }
+  if (p[0] === "questions") {
+    print(await hub.questions({ jobId: v.job }));
+    return;
+  }
+  if (p[0] === "answer") {
+    print(
+      await hub.answer({
+        jobId: v.job,
+        questionId: v["question-id"],
+        text: await taskText(),
       }),
     );
     return;
