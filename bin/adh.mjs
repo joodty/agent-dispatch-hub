@@ -13,6 +13,7 @@ import {
   HubError,
   run,
   fingerprint,
+  placementChecked,
 } from "../src/core/state.mjs";
 import {
   bootstrap,
@@ -49,6 +50,8 @@ const strings = [
   "job",
   "timeout-ms",
   "from-file",
+  "mapping-file",
+  "path",
 ];
 const options = Object.fromEntries(
   strings.map((key) => [key, { type: "string" }]),
@@ -135,7 +138,7 @@ async function register() {
 }
 const help = {
   name: "agent-dispatch-hub",
-  version: "0.1.0",
+  version: "0.2.0",
   usage: "node bin/adh.mjs <command> [options]",
   commands: {
     doctor: "Inspect local readiness without dispatch or remote contact",
@@ -148,6 +151,16 @@ const help = {
     "target use": "target use office",
     "target pair":
       "target pair home --prepare-input; then --from-file <protected file outside Git>; otherwise reads stdin",
+    "target inspect":
+      "target inspect <name>: read selected companion identity, path style and native workspaces",
+    "target configure":
+      "target configure <name> --mapping-file <JSON containing instance and workspaces> [--dry-run]",
+    "legacy-bind":
+      "--job job-...: explicitly record a legacy session's original instance; no regrouping or backend mutation",
+    verify:
+      "--job job-...: verify workspace affiliation and effective cwd through the selected companion",
+    artifact:
+      "--job job-... --path relative/file.txt: read through the frozen task placement",
     status: "[--target office]",
     dispatch:
       '--target office --workspace demo --text "task" [--timeout-ms 55000]',
@@ -210,7 +223,7 @@ async function main() {
       targets = { ready: false, code: error.code ?? "invalid-config" };
     }
     print({
-      version: "0.1.0",
+      version: "0.2.0",
       node: process.version,
       nodeSupported: Number(process.versions.node.split(".")[0]) >= 22,
       git,
@@ -236,6 +249,90 @@ async function main() {
       config.defaultTarget = selected.name;
       await atomicJson(join(home, "config.json"), config);
       print({ defaultTarget: selected.name });
+      return;
+    }
+    if (p[1] === "inspect") {
+      print(await hub.inspect({ target: p[2] }));
+      return;
+    }
+    if (p[1] === "configure") {
+      const selected = await hub.target(p[2]);
+      if (!v["mapping-file"])
+        throw new HubError(
+          "mapping-file-required",
+          "Provide an explicit placement mapping JSON file; no workspace or scope is inferred from a legacy path.",
+        );
+      const proposal = JSON.parse(
+        await readFile(resolve(v["mapping-file"]), "utf8"),
+      );
+      if (
+        !proposal ||
+        typeof proposal !== "object" ||
+        Array.isArray(proposal) ||
+        Object.keys(proposal).some(
+          (key) => !["instance", "workspaces"].includes(key),
+        )
+      )
+        throw new HubError(
+          "invalid-config",
+          "The mapping file must contain only instance and workspaces; copy those fields from the configuration example.",
+        );
+      const { validateTargetBinding, validateMapping } =
+        await import("../packages/dsh-companion/lib/placement.mjs");
+      placementChecked(() => validateTargetBinding(proposal.instance));
+      if (
+        !proposal.workspaces ||
+        typeof proposal.workspaces !== "object" ||
+        Array.isArray(proposal.workspaces) ||
+        !Object.keys(proposal.workspaces).length
+      )
+        throw new HubError(
+          "invalid-config",
+          "Provide at least one explicit named placement mapping.",
+        );
+      for (const [name, mapping] of Object.entries(proposal.workspaces)) {
+        validName(name, "workspace");
+        placementChecked(() =>
+          validateMapping(mapping, proposal.instance.pathStyle),
+        );
+      }
+      const observed = await hub.inspect({ target: selected.name });
+      if (
+        observed.instance.id !== proposal.instance.id ||
+        observed.instance.pathStyle !== proposal.instance.pathStyle
+      )
+        throw new HubError(
+          "instance-mismatch",
+          "The selected companion identity differs from the proposed mapping.",
+        );
+      if (selected.instance && selected.instance.id !== proposal.instance.id)
+        throw new HubError(
+          "target-conflict",
+          "Use a new target name for a different DSH instance; preserve existing jobs.",
+        );
+      if (v["dry-run"]) {
+        print({
+          dryRun: true,
+          target: selected.name,
+          instance: proposal.instance,
+          workspaces: proposal.workspaces,
+          existingJobsChanged: false,
+        });
+        return;
+      }
+      const { backup } = await import("../src/install/shared.mjs");
+      const backupPath = await backup(join(home, "config.json"));
+      await addTarget(home, selected.name, {
+        ...selected,
+        instance: proposal.instance,
+        workspaces: proposal.workspaces,
+      });
+      print({
+        target: selected.name,
+        version: 2,
+        backupPath,
+        existingJobsChanged: false,
+      });
       return;
     }
     if (p[1] === "pair") {
@@ -328,6 +425,7 @@ async function main() {
       await addTarget(home, targetName, target);
       print({
         target: targetName,
+        placementRequired: true,
         remoteChanges: false,
         pairingRequired: true,
         mcp: await register(),
@@ -348,12 +446,17 @@ async function main() {
         kind: "local",
         connectionFile: join(
           found.dshHome,
-          ".codex-dsh-bridge",
+          "profiles",
+          found.profile,
+          ".agent-dispatch-hub-placement",
           "connection.json",
         ),
       },
       workspaces,
     };
+    if (config.targets[targetName]?.connection.kind === "local")
+      target.connection.connectionFile =
+        config.targets[targetName].connection.connectionFile;
     if (
       config.targets[targetName] &&
       fingerprint(config.targets[targetName]) !== fingerprint(target)
@@ -387,13 +490,33 @@ async function main() {
       mcpNames: [v["mcp-name"] ?? "agent-dispatch-hub"],
       bridgeCheckout: await dependencyPath(home, "bridge"),
       syncCheckout: await dependencyPath(home, "sync"),
+      placementCheckout: join(repoRoot, "packages", "dsh-companion"),
     });
+    if (installed.placementStateDirectory)
+      await privateDirectory(installed.placementStateDirectory);
     await addTarget(home, targetName, target);
-    print({ target: targetName, ...installed, mcp: await register() });
+    print({
+      target: targetName,
+      placementRequired: true,
+      ...installed,
+      mcp: await register(),
+    });
     return;
   }
   if (p[0] === "status") {
     print(await hub.status({ target: v.target }));
+    return;
+  }
+  if (p[0] === "legacy-bind") {
+    print(await hub.bindLegacy({ jobId: v.job, target: v.target }));
+    return;
+  }
+  if (p[0] === "verify") {
+    print(await hub.verify({ jobId: v.job }));
+    return;
+  }
+  if (p[0] === "artifact") {
+    print(await hub.readArtifact({ jobId: v.job, path: v.path }));
     return;
   }
   if (p[0] === "dispatch") {

@@ -30,7 +30,11 @@ export async function smoke(
         "verification-unsupported",
         "This adapter does not support independent artifact reads.",
       );
-    return a.readArtifact({ sessionId: job.sessionId, path: artifact });
+    return a.readArtifact({
+      jobId: job.id,
+      sessionId: job.sessionId,
+      path: artifact,
+    });
   });
   let value;
   try {
@@ -67,6 +71,8 @@ export async function smoke(
     verification: {
       passed: true,
       method: "authenticated-backend-file-read",
+      placement: job.context ?? null,
+      absoluteArtifact: page.absolutePath ?? null,
       localFileVerified,
       value,
     },

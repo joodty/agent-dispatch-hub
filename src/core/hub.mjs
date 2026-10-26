@@ -3,12 +3,20 @@ import { join } from "node:path";
 import { createDshAdapter } from "../adapters/dsh.mjs";
 import { withJobWriter } from "./job-lock.mjs";
 import {
+  planPlacement,
+  digest,
+  placementInstructions,
+  assertContext,
+} from "./placement.mjs";
+import { PlacementError } from "../../packages/dsh-companion/lib/placement.mjs";
+import {
   loadConfig,
   readJson,
   atomicJson,
   fingerprint,
   validName,
   HubError,
+  placementChecked,
 } from "./state.mjs";
 
 export class AdapterRegistry {
@@ -63,6 +71,18 @@ export class Hub {
         adapter: t.adapter,
         connectionKind: t.connection.kind,
         workspaces: Object.keys(t.workspaces),
+        mappingStatus: Object.fromEntries(
+          Object.entries(t.workspaces).map(([alias, mapping]) => [
+            alias,
+            typeof mapping === "string"
+              ? "legacy-migration-required"
+              : "placement-v2",
+          ]),
+        ),
+        instance: t.instance ?? null,
+        migrationRequired: Object.values(t.workspaces).some(
+          (v) => typeof v === "string",
+        ),
       })),
     };
   }
@@ -73,6 +93,11 @@ export class Hub {
       return await fn(adapter);
     } catch (error) {
       if (error instanceof HubError) throw error;
+      if (error instanceof PlacementError)
+        throw new HubError(error.code, error.message, {
+          target: target.name,
+          field: error.field,
+        });
       if ([401, 403].includes(error.details?.status))
         throw new HubError(
           "authentication-required",
@@ -99,6 +124,13 @@ export class Hub {
       status: await this.withAdapter(selected, (a) => a.status()),
     };
   }
+  async inspect({ target } = {}) {
+    const selected = await this.target(target);
+    return {
+      target: selected.name,
+      ...(await this.withAdapter(selected, (a) => a.inspect())),
+    };
+  }
   async dispatch({ target, workspace, text, timeoutMs = 55000 } = {}) {
     const selected = await this.target(target);
     if (!workspace || !Object.hasOwn(selected.workspaces, workspace))
@@ -108,31 +140,87 @@ export class Hub {
       );
     if (typeof text !== "string" || !text.trim())
       throw new HubError("task-required", "A nonempty task is required.");
+    const mapping = selected.workspaces[workspace];
+    if (typeof mapping === "string" || !selected.instance)
+      throw new HubError(
+        "migration-required",
+        "This mapping has no instance, DSH workspace, execution directory and source scope binding. Inspect the selected target and explicitly configure placement v2 before a new dispatch.",
+      );
+    const id = "job-" + randomUUID();
+    const createdAt = new Date().toISOString();
+    const plan = placementChecked(() =>
+      planPlacement({
+        instance: selected.instance,
+        mapping,
+        targetName: selected.name,
+        mappingName: workspace,
+        jobId: id,
+        now: createdAt,
+      }),
+    );
     const receipt = {
-      version: 1,
-      id: "job-" + randomUUID(),
+      version: 2,
+      id,
       target: selected.name,
       adapter: selected.adapter,
       targetFingerprint: fingerprint(selected),
       workspace,
-      cwd: selected.workspaces[workspace],
-      createdAt: new Date().toISOString(),
+      instance: structuredClone(selected.instance),
+      mapping: structuredClone(mapping),
+      mappingHash: digest(mapping),
+      plan,
+      cwd: plan.execution.requestedCwd,
+      createdAt,
       state: "dispatching",
     };
     const path = join(this.home, "jobs", receipt.id + ".json");
     await atomicJson(path, receipt);
     try {
       const result = await this.withAdapter(selected, async (a) => {
-        // Admission is durable before waiting, so timeout/connection loss cannot orphan a known session.
-        return a.dispatch({
-          cwd: receipt.cwd,
-          text,
-          timeoutMs,
-          onAdmitted: async (admission) => {
-            Object.assign(receipt, admission);
-            await atomicJson(path, receipt);
-          },
+        await a.assertInstance(receipt.instance);
+        const prepared = await a.prepare({ jobId: receipt.id, plan });
+        Object.assign(receipt, {
+          sessionId: prepared.sessionId,
+          context: prepared.context,
+          cwd: prepared.context.execution.actualCwd,
         });
+        await atomicJson(path, receipt);
+        const verified = await a.verify({
+          jobId: receipt.id,
+          sessionId: receipt.sessionId,
+        });
+        assertContext(verified.context, receipt.context);
+        await withJobWriter(this.home, receipt.id, async () => {
+          const latest = await readJson(path);
+          if (latest.state === "cancellation-requested")
+            throw new HubError(
+              "dispatch-cancelled",
+              "This session was cancelled before its first task prompt. No task was sent.",
+            );
+          const sent = await a.send({
+            sessionId: receipt.sessionId,
+            text: placementInstructions(receipt.context, text),
+          });
+          Object.assign(receipt, sent, { state: "accepted" });
+          await atomicJson(path, receipt);
+        });
+        const result = await a.wait({
+          sessionId: receipt.sessionId,
+          requestId: receipt.requestId,
+          afterSeq: receipt.afterSeq,
+          timeoutMs,
+        });
+        const after = await a.verify({
+          jobId: receipt.id,
+          sessionId: receipt.sessionId,
+        });
+        assertContext(after.context, receipt.context);
+        return {
+          sessionId: receipt.sessionId,
+          requestId: receipt.requestId,
+          afterSeq: receipt.afterSeq,
+          ...result,
+        };
       });
       Object.assign(receipt, {
         sessionId: result.sessionId,
@@ -141,9 +229,31 @@ export class Hub {
         state: result.status,
         result,
       });
-      await atomicJson(path, receipt);
-      return { jobId: receipt.id, target: selected.name, workspace, ...result };
+      const superseded = await withJobWriter(
+        this.home,
+        receipt.id,
+        async () => {
+          const latest = await readJson(path);
+          if (
+            latest.requestId !== receipt.requestId ||
+            latest.state === "cancellation-requested"
+          )
+            return true;
+          await atomicJson(path, receipt);
+          return false;
+        },
+      );
+      return {
+        jobId: receipt.id,
+        target: selected.name,
+        workspace,
+        context: receipt.context,
+        ...result,
+        ...(superseded ? { superseded: true } : {}),
+      };
     } catch (error) {
+      if (!receipt.sessionId && typeof error.details?.sessionId === "string")
+        receipt.sessionId = error.details.sessionId;
       receipt.state = "error";
       receipt.error = {
         code: error.code ?? "backend-error",
@@ -152,7 +262,15 @@ export class Hub {
             ? error.message
             : "Backend operation failed.",
       };
-      await atomicJson(path, receipt);
+      await withJobWriter(this.home, receipt.id, async () => {
+        const latest = await readJson(path);
+        if (
+          (latest.requestId && latest.requestId !== receipt.requestId) ||
+          latest.state === "cancellation-requested"
+        )
+          return;
+        await atomicJson(path, receipt);
+      });
       throw new HubError(receipt.error.code, receipt.error.message, {
         jobId: receipt.id,
         target: receipt.target,
@@ -175,22 +293,170 @@ export class Hub {
         "session-unavailable",
         "This job has no confirmed backend session. Inspect its admission error.",
       );
+    if (job.version === 2) {
+      if (digest(job.instance) !== digest(selected.instance))
+        throw new HubError(
+          "instance-changed",
+          "This job is bound to a different DSH instance. Restore the original target binding.",
+        );
+    } else {
+      const binding = await readJson(
+        join(this.home, "legacy-bindings", id + ".json"),
+        null,
+      );
+      if (
+        !binding ||
+        binding.targetFingerprint !== job.targetFingerprint ||
+        binding.sessionId !== job.sessionId ||
+        digest(binding.instance) !== digest(selected.instance)
+      )
+        throw new HubError(
+          "legacy-job-unbound",
+          "This v1 job has no verified instance binding. Use legacy-bind explicitly; it does not move or stop the session.",
+        );
+      job.instance = binding.instance;
+      job.legacyBinding = binding;
+    }
     return { job, selected };
+  }
+  async bindLegacy({ jobId, target } = {}) {
+    if (!/^job-[a-f0-9-]{36}$/.test(jobId ?? ""))
+      throw new HubError("invalid-job", "Invalid job ID.");
+    const job = await readJson(join(this.home, "jobs", jobId + ".json"));
+    if (job.version !== 1 || !job.sessionId)
+      throw new HubError(
+        "invalid-legacy-job",
+        "Only an existing v1 session can be explicitly bound.",
+      );
+    const selected = await this.target(target ?? job.target);
+    if (
+      selected.name !== job.target ||
+      fingerprint(selected) !== job.targetFingerprint
+    )
+      throw new HubError(
+        "target-changed",
+        "Restore this legacy job's original connection before binding it.",
+      );
+    if (!selected.instance)
+      throw new HubError(
+        "migration-required",
+        "Configure a verified instance binding first.",
+      );
+    const context = await this.withAdapter(selected, async (a) => {
+      await a.assertInstance(selected.instance);
+      return a.observeLegacy({ sessionId: job.sessionId });
+    });
+    // This is a separate, explicit controller-side association. Never mutate the DSH session.
+    const binding = {
+      version: 1,
+      jobId,
+      sessionId: job.sessionId,
+      targetFingerprint: job.targetFingerprint,
+      instance: selected.instance,
+      observed: context,
+      boundAt: new Date().toISOString(),
+    };
+    await atomicJson(
+      join(this.home, "legacy-bindings", jobId + ".json"),
+      binding,
+    );
+    return binding;
+  }
+  async verify({ jobId } = {}) {
+    const { job, selected } = await this.resolveJob(jobId);
+    if (job.version !== 2)
+      throw new HubError(
+        "legacy-placement-unsupported",
+        "Legacy jobs have no enforced placement contract; inspect their explicit binding.",
+      );
+    return this.withAdapter(selected, async (a) => {
+      await a.assertInstance(job.instance);
+      const verified = await a.verify({
+        jobId: job.id,
+        sessionId: job.sessionId,
+      });
+      assertContext(verified.context, job.context);
+      return { jobId: job.id, target: job.target, ...verified };
+    });
+  }
+  async readArtifact({ jobId, path } = {}) {
+    const { job, selected } = await this.resolveJob(jobId);
+    if (job.version !== 2)
+      throw new HubError(
+        "legacy-placement-unsupported",
+        "Legacy jobs have no recorded task cwd and source scope for artifact reads.",
+      );
+    return this.withAdapter(selected, async (a) => {
+      await a.assertInstance(job.instance);
+      const verified = await a.verify({
+        jobId: job.id,
+        sessionId: job.sessionId,
+      });
+      assertContext(verified.context, job.context);
+      return {
+        jobId: job.id,
+        target: job.target,
+        ...(await a.readArtifact({
+          jobId: job.id,
+          sessionId: job.sessionId,
+          path,
+        })),
+      };
+    });
   }
   async operate(operation, { jobId, text, timeoutMs = 55000 } = {}) {
     if (!["send", "wait", "messages", "cancel"].includes(operation))
       throw new HubError("invalid-operation", "Unsupported job operation.");
     const { job, selected } = await this.resolveJob(jobId);
     const invoke = (current, target) =>
-      this.withAdapter(target, (a) =>
-        a[operation]({
+      this.withAdapter(target, async (a) => {
+        await a.assertInstance(current.instance);
+        if (operation === "send") {
+          if (current.version !== 2)
+            throw new HubError(
+              "legacy-follow-up-disabled",
+              "Create a fully configured v2 job for follow-up work; this legacy session is unchanged.",
+            );
+          if (
+            digest(target.workspaces[current.workspace]) !== current.mappingHash
+          )
+            throw new HubError(
+              "mapping-changed",
+              "This mapping changed after dispatch. Read, wait or cancel the original job, or dispatch a new one.",
+            );
+          if (typeof text !== "string" || !text.trim())
+            throw new HubError("task-required", "A nonempty task is required.");
+          if (!current.requestId)
+            throw new HubError(
+              "request-unavailable",
+              "The first task has not been admitted. Wait for dispatch admission before sending a follow-up.",
+            );
+        }
+        if (current.version === 2 && operation !== "cancel") {
+          const verified = await a.verify({
+            jobId: current.id,
+            sessionId: current.sessionId,
+          });
+          assertContext(verified.context, current.context);
+        }
+        const result = await a[operation]({
           sessionId: current.sessionId,
           afterSeq: current.afterSeq,
           requestId: current.requestId,
-          ...(text === undefined ? {} : { text }),
+          ...(text === undefined
+            ? {}
+            : { text: placementInstructions(current.context, text) }),
           ...(operation === "wait" ? { timeoutMs } : {}),
-        }),
-      );
+        });
+        if (current.version === 2 && operation === "wait") {
+          const verified = await a.verify({
+            jobId: current.id,
+            sessionId: current.sessionId,
+          });
+          assertContext(verified.context, current.context);
+        }
+        return result;
+      });
     if (operation === "messages")
       return {
         jobId: job.id,

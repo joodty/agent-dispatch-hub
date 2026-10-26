@@ -11,9 +11,9 @@
 
 请直接完成可逆的检查、依赖安装、备份与配置合并，不覆盖现有 Codex 或 DSH 设置。检查 Node.js/Git、现有 DSH 安装与 profile、Codex 配置位置，以及 hub 的配置和目标。只有发现唯一可靠的路径时才推断；不要扫描其他浏览器会话、端口、账号或机器来猜连接。
 
-根据用户想使用的本机或远程环境选择命名 target，并明确工作区别名及其实际绝对路径。本机路径和远程机器路径分别核实；无法判断目标、profile 或工作区时，先完成其余检查，再简短询问实际歧义。远程 DSH 由远程管理者部署，不要擅自修改服务器或把本机路径复制过去。
+根据用户选定的实例检查原生工作区列表，分别明确实例及连接、DSH工作区、任务cwd/生成规则、实际源码和允许读写范围。先读 docs/README-PLACEMENT.md，不从旧路径猜工作区或把归组当权限。路径按目标系统解释。远程部署由管理员处理；未获授权的实例只用模拟测试，不连接探测。
 
-按 README-AI.md 执行 bootstrap、setup、必要的配对、doctor 和 status。远程配对将 launch URL 经 stdin 或受保护文件传入，不放入命令行参数；只向配置中完全相同的 HTTPS origin 交换凭据。只有实际需要 GUI 登录或缺少远程凭据时，才请人完成相应登录或提供受保护的输入方式；不能声称能够绕过登录或凭空取得远程机器路径。
+按 README-AI.md 执行 bootstrap、setup、必要的配对，再 target inspect 核实实例和工作区，用 target configure --mapping-file 显式配置v2，之后 doctor、status、smoke。先核对映射再建独立测试任务，不迁移、停止或修改已有任务。控制桌面或浏览器前先侧边确认程序和范围，收到明确同意再操作，未回复不算授权。远程配对经受保护输入，不放命令参数，只向同一HTTPS origin交换凭据。
 
 注册 hub MCP 后检查当前 Codex 是否需要重新加载。在明确选择的 target/workspace 内运行 smoke；它会发起真实模型任务并创建独立验收子目录，可能消耗模型额度。检查任务回执、模型输出及实际文件产物，区分本机单元测试、模拟服务测试与真实模型验收。验收未通过时如实说明阻塞原因，不把原型成功当作本次安装成功。
 
@@ -65,6 +65,14 @@ node bin/adh.mjs target pair home --from-file "<上一步返回的inputFile>"
 
 ## 3. 选择、连通和验收
 
+`setup --workspace name=/path` 为兼容旧入口，只建立连接和旧路径别名，尚不能派工。安装并加载 placement 配套插件后，先只读核对，再显式配置。JSON 结构见 [示例](examples/config.example.json)，迁移和创建规则见 [工作区说明](docs/README-PLACEMENT.md)。不自动把源码路径设为任务目录。
+
+```sh
+node bin/adh.mjs target inspect office
+node bin/adh.mjs target configure office --mapping-file <absolute-mapping.json> --dry-run
+node bin/adh.mjs target configure office --mapping-file <absolute-mapping.json>
+```
+
 ```sh
 node bin/adh.mjs target list
 node bin/adh.mjs target use office
@@ -75,7 +83,7 @@ node bin/adh.mjs smoke --target office --workspace demo
 
 把命令中的名称替换成前一步创建的目标和工作区。`smoke` 是主动发起的真实模型验收，只在所选工作区中新建独立子目录；它不属于 `bootstrap` 或 `doctor`。检查真实文件产物，不能只看命令退出码。
 
-MCP 注册后，按 Codex 当前行为重新加载配置或重启会话，再确认 `hub_targets`、`hub_status`、`hub_dispatch`、`hub_send`、`hub_wait`、`hub_messages`、`hub_cancel` 可用。工具不可见时先排查注册和重新加载，不要重复安装模型后端。
+MCP 注册后重新加载，再确认原派工工具以及 `hub_inspect`、`hub_verify`、`hub_artifact` 可用。通过 `verify --job <id>` 核实工作区、初始目录与实际cwd，通过 `artifact --job <id> --path <relative-path>` 检查产物。工具不可见时先排查注册和重新加载，不重复安装模型后端。
 
 已有对话的原生工具列表尚未刷新时，可直接调用同一 MCP，继续完成安装验收：
 

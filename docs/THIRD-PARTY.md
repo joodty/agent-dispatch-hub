@@ -2,6 +2,8 @@
 
 Agent Dispatch Hub 使用外部项目提供 DSH 执行与桥接能力。外部源码通过 `dependencies.lock.json` 中的 Git URL 和完整 SHA 固定，在用户状态目录下载；本仓库不把外部源码复制为自己的实现，也不修改或重新声明它们的许可。
 
+`packages/dsh-companion` 是本仓库新增的包装与准入实现，通过 DSH 公开 Host 服务调用工作区、会话和工作目录能力，不内置 DSH 运行时代码。它不替代外部 bridge 的消息认证传输，也不改变外部项目许可。
+
 | 外部项目 | 当前已知来源与许可证据 | 使用方式 |
 | --- | --- | --- |
 | DSH sync fork | 当前使用 sync fork，原始上游为 Walvez；该项目提供 MIT 许可。具体来源与固定提交以锁文件为准。 | bootstrap 获取固定版本，保留其许可与来源信息。 |

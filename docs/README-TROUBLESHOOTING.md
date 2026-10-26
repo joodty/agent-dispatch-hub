@@ -4,6 +4,14 @@
 
 | 现象 | 处理顺序 |
 | --- | --- |
+| `migration-required` | 旧路径别名缺少实例/归属/执行目录/范围。先 `target inspect`，再按 [迁移说明](README-PLACEMENT.md) 显式配置，不改正在运行的旧任务。 |
+| `companion-required` / `companion-unreachable` | 在已选实例安装并加载本仓库 placement 插件，核对 profile 及其私有状态目录；不尝试其他实例。 |
+| `instance-mismatch` / `instance-changed` | 当前端点与目标或回执的稳定实例身份不同；恢复原连接或使用新目标名，不覆盖旧任务绑定。 |
+| `mapping-changed` | 映射在派工后改变。旧任务可按原记录读取/等待/取消，新工作使用新任务。 |
+| `legacy-job-unbound` | `legacy-bind --job <id>` 显式记录旧会话实际实例与归属；它只写侧边绑定文件，不改 DSH 会话，不开启旧任务追问。 |
+| 工作区缺失或归属不明确 | 对选定实例执行 `target inspect`。核对 ID 或唯一真实路径，只有显式 `onMissing:create` 才能注册现存目录。 |
+| 目录缺失、cwd 漂移或范围校验失败 | 核对目标机目录、真实路径和范围。不能用工作区根、当前本机目录或其他实例静默顶替；插件不会自动恢复 cwd。 |
+| 要求强制任意读写根 | 当前 DSH 没有此接口；`sandbox-required` 明确拒绝。`instructions` 仅作为任务范围约定，界面归组不授予或限制文件权限。 |
 | CLI 无法启动 | 检查 Node.js 是否至少为 22、当前目录是否为仓库、依赖是否安装完整，再读取 CLI 帮助。 |
 | bootstrap 拉取或安装失败 | 检查 Git、网络和固定提交是否可访问；使用锁文件中的来源，不临时换成不明 fork 或最新分支。 |
 | 缺少目标或工作区 | 用 `target list` 核对名字，检查该目标的 `workspaces`；补充真实绝对路径，不用当前目录代替。 |

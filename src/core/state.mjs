@@ -10,6 +10,11 @@ import {
   relative,
 } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  validateTargetBinding,
+  validateMapping,
+  PlacementError,
+} from "../../packages/dsh-companion/lib/placement.mjs";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { randomUUID, createHash } from "node:crypto";
@@ -24,6 +29,15 @@ export class HubError extends Error {
   }
 }
 export const run = promisify(execFile);
+export function placementChecked(fn) {
+  try {
+    return fn();
+  } catch (error) {
+    if (error instanceof PlacementError)
+      throw new HubError(error.code, error.message, { field: error.field });
+    throw error;
+  }
+}
 export function stateHome(value = process.env.ADH_HOME) {
   const path = resolve(value || join(homedir(), ".agent-dispatch-hub"));
   const source = fileURLToPath(new URL("../../", import.meta.url));
@@ -135,14 +149,14 @@ export async function loadConfig(home) {
     targets: {},
   });
   if (
-    config.version !== 1 ||
+    ![1, 2].includes(config.version) ||
     !config.targets ||
     typeof config.targets !== "object" ||
     Array.isArray(config.targets)
   )
     throw new HubError(
       "invalid-config",
-      "Expected config version 1 and named targets.",
+      "Expected config version 1 or 2 and named targets.",
     );
   for (const [name, target] of Object.entries(config.targets)) {
     validName(name, "target");
@@ -151,15 +165,24 @@ export async function loadConfig(home) {
       !target.connection ||
       typeof target.connection !== "object" ||
       !target.workspaces ||
-      typeof target.workspaces !== "object"
+      typeof target.workspaces !== "object" ||
+      Array.isArray(target.workspaces)
     )
       throw new HubError(
         "invalid-config",
         `Target ${name} needs connection and workspaces.`,
       );
+    if (target.instance)
+      placementChecked(() => validateTargetBinding(target.instance));
     for (const [key, path] of Object.entries(target.workspaces)) {
       validName(key, "workspace");
-      absoluteWorkspace(path);
+      if (typeof path === "string") absoluteWorkspace(path);
+      else {
+        placementChecked(() => validateTargetBinding(target.instance));
+        placementChecked(() =>
+          validateMapping(path, target.instance.pathStyle),
+        );
+      }
     }
   }
   return config;
@@ -177,6 +200,7 @@ export async function addTarget(home, name, target) {
     ...target,
     workspaces: { ...previous?.workspaces, ...target.workspaces },
   };
+  if (target.instance) config.version = 2;
   config.defaultTarget ??= name;
   await atomicJson(join(home, "config.json"), config);
   return config;

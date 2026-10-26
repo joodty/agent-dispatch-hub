@@ -7,11 +7,32 @@ import { HubError } from "./core/state.mjs";
 export function createMcpServer({ home, hub = new Hub({ home }) }) {
   const server = new McpServer({
     name: "agent-dispatch-hub",
-    version: "0.1.0",
+    version: "0.2.0",
   });
   const timeout = z.number().int().min(1000).max(300000).optional();
   const target = z.string().optional();
   const definitions = [
+    [
+      "hub_inspect",
+      "Read the explicitly selected instance identity and DSH workspace directory mapping",
+      { target },
+      (args) => hub.inspect(args),
+      true,
+    ],
+    [
+      "hub_verify",
+      "Verify a job's frozen instance, DSH workspace membership and effective task cwd",
+      { jobId: z.string() },
+      (args) => hub.verify(args),
+      true,
+    ],
+    [
+      "hub_artifact",
+      "Read a relative artifact inside the job's frozen cwd and declared read scope",
+      { jobId: z.string(), path: z.string().min(1) },
+      (args) => hub.readArtifact(args),
+      true,
+    ],
     [
       "hub_targets",
       "List configured targets and workspace names",

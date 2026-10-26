@@ -18,7 +18,7 @@ try {
   const args = file ? JSON.parse(await readFile(file, "utf8")) : {};
   client = new Client({
     name: "agent-dispatch-hub-cli-fallback",
-    version: "0.1.0",
+    version: "0.2.0",
   });
   await client.connect(
     new StdioClientTransport({
