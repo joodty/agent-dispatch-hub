@@ -1,5 +1,21 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve, join, isAbsolute, win32, posix } from "node:path";
+import {
+  dirname,
+  resolve,
+  join,
+  isAbsolute,
+  win32,
+  posix,
+  parse,
+  relative,
+} from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  validateTargetBinding,
+  validateMapping,
+  PlacementError,
+} from "../../packages/dsh-companion/lib/placement.mjs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -13,8 +29,39 @@ export class HubError extends Error {
   }
 }
 export const run = promisify(execFile);
+export function placementChecked(fn) {
+  try {
+    return fn();
+  } catch (error) {
+    if (error instanceof PlacementError)
+      throw new HubError(error.code, error.message, { field: error.field });
+    throw error;
+  }
+}
 export function stateHome(value = process.env.ADH_HOME) {
-  return resolve(value || join(homedir(), ".agent-dispatch-hub"));
+  const path = resolve(value || join(homedir(), ".agent-dispatch-hub"));
+  const source = fileURLToPath(new URL("../../", import.meta.url));
+  const part = relative(source, path);
+  if (
+    path === parse(path).root ||
+    path === homedir() ||
+    part === "" ||
+    (!part.startsWith("..") && !isAbsolute(part))
+  )
+    throw new HubError(
+      "invalid-home",
+      "Use a dedicated state directory outside this source repository, not a drive root or your entire home directory.",
+    );
+  for (let directory = path; ; directory = dirname(directory)) {
+    if (existsSync(join(directory, ".git")))
+      throw new HubError(
+        "invalid-home",
+        "Keep hub state and credentials outside every Git work tree.",
+      );
+    const parent = dirname(directory);
+    if (parent === directory) break;
+  }
+  return path;
 }
 export function validName(value, label = "name") {
   if (
@@ -102,14 +149,14 @@ export async function loadConfig(home) {
     targets: {},
   });
   if (
-    config.version !== 1 ||
+    ![1, 2].includes(config.version) ||
     !config.targets ||
     typeof config.targets !== "object" ||
     Array.isArray(config.targets)
   )
     throw new HubError(
       "invalid-config",
-      "Expected config version 1 and named targets.",
+      "Expected config version 1 or 2 and named targets.",
     );
   for (const [name, target] of Object.entries(config.targets)) {
     validName(name, "target");
@@ -118,15 +165,24 @@ export async function loadConfig(home) {
       !target.connection ||
       typeof target.connection !== "object" ||
       !target.workspaces ||
-      typeof target.workspaces !== "object"
+      typeof target.workspaces !== "object" ||
+      Array.isArray(target.workspaces)
     )
       throw new HubError(
         "invalid-config",
         `Target ${name} needs connection and workspaces.`,
       );
+    if (target.instance)
+      placementChecked(() => validateTargetBinding(target.instance));
     for (const [key, path] of Object.entries(target.workspaces)) {
       validName(key, "workspace");
-      absoluteWorkspace(path);
+      if (typeof path === "string") absoluteWorkspace(path);
+      else {
+        placementChecked(() => validateTargetBinding(target.instance));
+        placementChecked(() =>
+          validateMapping(path, target.instance.pathStyle),
+        );
+      }
     }
   }
   return config;
@@ -144,6 +200,7 @@ export async function addTarget(home, name, target) {
     ...target,
     workspaces: { ...previous?.workspaces, ...target.workspaces },
   };
+  if (target.instance) config.version = 2;
   config.defaultTarget ??= name;
   await atomicJson(join(home, "config.json"), config);
   return config;

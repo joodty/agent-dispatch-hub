@@ -25,6 +25,7 @@ export const HUB_MCP_DENY = [
 const pluginIds = new Map([
   ["dsh-codex-sync", "codex-sync"],
   ["codex-dsh-bridge-companion", "codex-dsh-bridge"],
+  ["agent-dispatch-hub-dsh", "agent-dispatch-hub-placement"],
 ]);
 const exists = (path) =>
   access(path).then(
@@ -42,7 +43,11 @@ function mergeMap(target, incoming) {
   }
 }
 /** Preserve YAML nodes/tags/comments, remove duplicate user insertions supplied by bundles. */
-export function mergeCompanionPatch(text, denyNames = HUB_MCP_DENY) {
+export function mergeCompanionPatch(
+  text,
+  denyNames = HUB_MCP_DENY,
+  placementStateDirectory,
+) {
   const document = parseDocument(text ?? "[]\n", { uniqueKeys: true });
   if (document.errors.length || !isSeq(document.contents))
     throw installError(
@@ -109,6 +114,21 @@ export function mergeCompanionPatch(text, denyNames = HUB_MCP_DENY) {
     } else overrides.set(id, row);
   }
   const syncId = "codex-sync";
+  if (placementStateDirectory) {
+    const id = "agent-dispatch-hub-placement";
+    if (!configs.has(id)) configs.set(id, document.createNode({}));
+    const placement = configs.get(id);
+    const prior = placement.get("stateDirectory");
+    if (prior !== undefined && prior !== placementStateDirectory)
+      throw installError(
+        "PLACEMENT_STATE_CONFLICT",
+        "This profile already uses another placement state directory. Preserve its instance identity and configure the path explicitly.",
+      );
+    if (prior !== placementStateDirectory) {
+      placement.set("stateDirectory", placementStateDirectory);
+      changed = true;
+    }
+  }
   if (!configs.has(syncId)) configs.set(syncId, document.createNode({}));
   const sync = configs.get(syncId);
   const denyNode = sync.get("mcpMirrorDeny", true);
@@ -344,6 +364,9 @@ export async function installDshCompanions(options = {}) {
     const packages = [
       await pack(options.syncCheckout, temporary, runner, npmCli),
       await pack(options.bridgeCheckout, temporary, runner, npmCli),
+      ...(options.placementCheckout
+        ? [await pack(options.placementCheckout, temporary, runner, npmCli)]
+        : []),
     ];
     const needed = [];
     for (const pkg of packages)
@@ -387,16 +410,28 @@ export async function installDshCompanions(options = {}) {
       options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"),
     );
     const originalPatch = await readOptional(patchPath);
-    const patch = mergeCompanionPatch(originalPatch, [
-      ...HUB_MCP_DENY,
-      ...(options.mcpNames ?? []),
-      ...aliases,
-    ]);
+    const placementStateDirectory = options.placementCheckout
+      ? join(profileDir, ".agent-dispatch-hub-placement")
+      : undefined;
+    const patch = mergeCompanionPatch(
+      originalPatch,
+      [...HUB_MCP_DENY, ...(options.mcpNames ?? []), ...aliases],
+      placementStateDirectory,
+    );
     const changed = needed.length > 0 || patch.changed || bundleChange;
     const result = {
       changed,
       backups: [],
       connectionFile,
+      ...(placementStateDirectory
+        ? {
+            placementStateDirectory,
+            placementConnectionFile: join(
+              placementStateDirectory,
+              "connection.json",
+            ),
+          }
+        : {}),
       needsRestart: changed,
       profileDir,
       packages: packages.map(({ name, version, sha256 }) => ({

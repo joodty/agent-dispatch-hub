@@ -197,6 +197,51 @@ test("YAML dynamic deny expression is rejected without executing or serializing 
     { code: "DSH_PATCH_UNSUPPORTED" },
   );
 });
+
+test("placement companion is installed with profile-specific state and preserves an existing identity directory", async (t) => {
+  const options = await companionFixture(t);
+  const placementCheckout = join(options.root, "placement");
+  await put(
+    join(placementCheckout, "package.json"),
+    JSON.stringify({
+      name: "agent-dispatch-hub-dsh",
+      version: "0.2.0",
+      dsh: { bundle: { patch: "./cordis.patch.yml" } },
+    }),
+  );
+  await put(
+    join(placementCheckout, "index.js"),
+    "export const protocolVersion=2;\n",
+  );
+  const result = await installDshCompanions({ ...options, placementCheckout });
+  assert.equal(result.packages.length, 3);
+  assert.equal(
+    result.placementStateDirectory,
+    join(options.profileDir, ".agent-dispatch-hub-placement"),
+  );
+  const patch = await readFile(
+    join(options.profileDir, "cordis.patch.yml"),
+    "utf8",
+  );
+  const row = parseYaml(patch).find(
+    (r) => r.id === "agent-dispatch-hub-placement",
+  );
+  assert.equal(row.config.stateDirectory, result.placementStateDirectory);
+  assert.equal(
+    mergeCompanionPatch(patch, undefined, result.placementStateDirectory)
+      .changed,
+    false,
+  );
+  assert.throws(
+    () =>
+      mergeCompanionPatch(
+        patch,
+        undefined,
+        join(options.root, "another-state"),
+      ),
+    { code: "PLACEMENT_STATE_CONFLICT" },
+  );
+});
 test("removing a redundant bundle insertion retains disabled and other loader fields", () => {
   const merged = mergeCompanionPatch(
     "- insert:\n    - id: codex-dsh-bridge\n      name: codex-dsh-bridge-companion\n      disabled: true\n      config:\n        custom: retained\n",

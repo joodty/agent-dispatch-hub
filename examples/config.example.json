@@ -1,26 +1,68 @@
 {
-  "version": 1,
+  "version": 2,
   "defaultTarget": "office",
   "targets": {
     "office": {
       "adapter": "dsh",
+      "instance": {
+        "id": "REPLACE_WITH_LOCAL_INSTANCE_ID",
+        "pathStyle": "win32"
+      },
       "connection": {
         "kind": "local",
-        "connectionFile": "/absolute/dsh-home/.codex-dsh-bridge/connection.json"
+        "connectionFile": "C:/sample/dsh-home/profiles/desktop/.agent-dispatch-hub-placement/connection.json"
       },
       "workspaces": {
-        "demo": "/absolute/local/project"
+        "demo": {
+          "dshWorkspace": {
+            "id": "REPLACE_WITH_LOCAL_WORKSPACE_ID",
+            "onMissing": "error"
+          },
+          "execution": {
+            "mode": "subdirectory",
+            "root": "C:/sample/dispatch/tasks",
+            "template": "{date}-{jobId}",
+            "create": true
+          },
+          "source": { "root": "C:/sample/source/project" },
+          "scope": {
+            "read": ["C:/sample/source/project", "{taskCwd}"],
+            "write": ["{taskCwd}"],
+            "enforcement": "instructions"
+          }
+        }
       }
     },
     "home": {
       "adapter": "dsh",
+      "instance": {
+        "id": "REPLACE_WITH_REMOTE_INSTANCE_ID",
+        "pathStyle": "posix"
+      },
       "connection": {
         "kind": "remote",
         "baseUrl": "https://dsh.example.com",
         "credentialFile": "/absolute/user-state/credentials/home.json"
       },
       "workspaces": {
-        "demo": "/absolute/path/on/remote/machine"
+        "demo": {
+          "dshWorkspace": {
+            "path": "/absolute/remote/dispatch",
+            "onMissing": "error"
+          },
+          "execution": {
+            "mode": "subdirectory",
+            "root": "/absolute/remote/dispatch/tasks",
+            "template": "{date}-{jobId}",
+            "create": true
+          },
+          "source": { "root": "/absolute/remote/source/project" },
+          "scope": {
+            "read": ["/absolute/remote/source/project", "{taskCwd}"],
+            "write": ["{taskCwd}"],
+            "enforcement": "instructions"
+          }
+        }
       }
     }
   }

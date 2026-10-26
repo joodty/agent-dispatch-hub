@@ -7,11 +7,53 @@ import { HubError } from "./core/state.mjs";
 export function createMcpServer({ home, hub = new Hub({ home }) }) {
   const server = new McpServer({
     name: "agent-dispatch-hub",
-    version: "0.1.0",
+    version: "0.2.0",
   });
   const timeout = z.number().int().min(1000).max(300000).optional();
   const target = z.string().optional();
   const definitions = [
+    [
+      "hub_recover",
+      "Recover an uncertain placement using the original job ID and frozen plan; sends no model prompt",
+      { jobId: z.string() },
+      (args) => hub.recover(args),
+      false,
+    ],
+    [
+      "hub_retry",
+      "Confirm an uncertain prompt from its original request ID and exact text; never resend",
+      { jobId: z.string(), text: z.string().min(1) },
+      (args) => hub.retryPrompt(args),
+      false,
+    ],
+    [
+      "hub_receipt",
+      "Read the durable receipt and retained backend completion evidence without changing a task",
+      { jobId: z.string() },
+      (args) => hub.receipt(args),
+      true,
+    ],
+    [
+      "hub_inspect",
+      "Read the explicitly selected instance identity and DSH workspace directory mapping",
+      { target },
+      (args) => hub.inspect(args),
+      true,
+    ],
+    [
+      "hub_verify",
+      "Verify a job's frozen instance, DSH workspace membership and effective task cwd",
+      { jobId: z.string() },
+      (args) => hub.verify(args),
+      true,
+    ],
+    [
+      "hub_artifact",
+      "Read a relative artifact inside the job's frozen cwd and declared read scope",
+      { jobId: z.string(), path: z.string().min(1) },
+      (args) => hub.readArtifact(args),
+      true,
+    ],
     [
       "hub_targets",
       "List configured targets and workspace names",

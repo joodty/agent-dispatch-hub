@@ -11,9 +11,9 @@
 
 请直接完成可逆的检查、依赖安装、备份与配置合并，不覆盖现有 Codex 或 DSH 设置。检查 Node.js/Git、现有 DSH 安装与 profile、Codex 配置位置，以及 hub 的配置和目标。只有发现唯一可靠的路径时才推断；不要扫描其他浏览器会话、端口、账号或机器来猜连接。
 
-根据用户想使用的本机或远程环境选择命名 target，并明确工作区别名及其实际绝对路径。本机路径和远程机器路径分别核实；无法判断目标、profile 或工作区时，先完成其余检查，再简短询问实际歧义。远程 DSH 由远程管理者部署，不要擅自修改服务器或把本机路径复制过去。
+根据用户选定的实例检查原生工作区列表，分别明确实例及连接、DSH工作区、任务cwd/生成规则、实际源码和允许读写范围。先读 docs/README-PLACEMENT.md，不从旧路径猜工作区或把归组当权限。路径按目标系统解释。远程部署由管理员处理；未获授权的实例只用模拟测试，不连接探测。
 
-按 README-AI.md 执行 bootstrap、setup、必要的配对、doctor 和 status。远程配对将 launch URL 经 stdin 或受保护文件传入，不放入命令行参数；只向配置中完全相同的 HTTPS origin 交换凭据。只有实际需要 GUI 登录或缺少远程凭据时，才请人完成相应登录或提供受保护的输入方式；不能声称能够绕过登录或凭空取得远程机器路径。
+按 README-AI.md 执行 bootstrap、setup、必要的配对，再 target inspect 核实实例和工作区，用 target configure --mapping-file 显式配置v2，之后 doctor、status、smoke。先核对映射再建独立测试任务，不迁移、停止或修改已有任务。控制桌面或浏览器前先侧边确认程序和范围，收到明确同意再操作，未回复不算授权。远程配对经受保护输入，不放命令参数，只向同一HTTPS origin交换凭据。
 
 注册 hub MCP 后检查当前 Codex 是否需要重新加载。在明确选择的 target/workspace 内运行 smoke；它会发起真实模型任务并创建独立验收子目录，可能消耗模型额度。检查任务回执、模型输出及实际文件产物，区分本机单元测试、模拟服务测试与真实模型验收。验收未通过时如实说明阻塞原因，不把原型成功当作本次安装成功。
 
@@ -30,6 +30,8 @@
 git clone https://github.com/joodty/agent-dispatch-hub.git
 cd agent-dispatch-hub
 npm ci --ignore-scripts
+npm test
+npm run check
 node bin/adh.mjs --help
 node bin/adh.mjs doctor
 node bin/adh.mjs bootstrap
@@ -42,23 +44,34 @@ node bin/adh.mjs bootstrap
 本机安装使用实际查明的绝对路径和 profile：
 
 ```sh
-node bin/adh.mjs setup local --target office --dsh-home <DSH绝对目录> --profile desktop --workspace demo=<本机项目绝对目录> --codex-home <Codex配置绝对目录>
+node bin/adh.mjs setup local --target office --dsh-home "<DSH绝对目录>" --profile desktop --workspace "demo=<本机项目绝对目录>" --codex-home "<Codex配置绝对目录>"
 ```
 
 先加 `--dry-run` 核对探测出的原生程序路径、数据目录、profile 和工作区；确认后再执行安装。Windows 桌面版要求 DSH 已首次启动并初始化 `desktop` profile。需要变更配套组件时，先确认没有运行中的任务，再完全退出 DSH（关闭窗口可能只是收到托盘）；安装器不会强杀进程。安装后重新启动该 DSH，并保持它运行。
 
 此步骤安装配套组件、合并设置、注册 hub MCP 并添加目标。安装包保留在选定 DSH 数据目录的 `.agent-dispatch-hub/packages`，不会引用随后被删除的临时文件。原配置有逐文件备份；TOML 的结构化合并可能重新排版注释，配置值会保留。没有唯一证据时，不猜 DSH profile、Codex 配置目录或工作区。MCP 同名冲突时可明确指定 `--mcp-name <新名称>`；已有不同配置不会被覆盖。
 
+非 Windows 平台必须额外提供 `--dsh-cli "<已安装CLI的绝对路径>"`。它必须能管理所选 profile；桌面的 `desktop` profile 使用桌面版自带的管理入口。其他平台的自动测试不代表已经完成桌面版真机安装验收，实际支持状态见发布验证记录。
+
 远程安装使用用户提供的 HTTPS 服务地址和服务器上的工作区：
 
 ```sh
-node bin/adh.mjs setup remote --target home --url https://dsh.example.com --workspace demo=<远程项目绝对目录> --codex-home <本机Codex配置绝对目录>
-node bin/adh.mjs target pair home
+node bin/adh.mjs setup remote --target home --url https://dsh.example.com --workspace "demo=<远程项目绝对目录>" --codex-home "<本机Codex配置绝对目录>"
+node bin/adh.mjs target pair home --prepare-input
+node bin/adh.mjs target pair home --from-file "<上一步返回的inputFile>"
 ```
 
-配对需要该远程服务的有效 launch URL。按 CLI 提示通过 stdin 输入，或使用 `target pair home --from-file <受保护文件路径>`；文件只包含认证 URL，URL 本身不能出现在命令历史或聊天中。AI 可将受保护文件直接传入 CLI，不回显文件内容。远程 DSH 安装及模型登录由该环境的管理者处理。
+配对需要该远程服务的有效 launch URL。`--prepare-input` 在 Hub 状态目录生成仓库外的私有空文件，将 URL 写入该文件后再执行 `--from-file`；也可把已有受保护输入复制到该文件，全程不回显内容。成功配对后，该受管输入文件会删除。Windows 仅接受此受管目录，POSIX 输入文件须为 0600；所有平台都拒绝 Git 工作树内的认证输入。stdin 只用于管道，交互终端输入会被拒绝以避免回显。URL 本身不能出现在命令历史或聊天中。远程 DSH 安装及模型登录由该环境的管理者处理。
 
 ## 3. 选择、连通和验收
+
+`setup --workspace name=/path` 为兼容旧入口，只建立连接和旧路径别名，尚不能派工。安装并加载 placement 配套插件后，先只读核对，再显式配置。JSON 结构见 [示例](examples/config.example.json)，迁移和创建规则见 [工作区说明](docs/README-PLACEMENT.md)。不自动把源码路径设为任务目录。
+
+```sh
+node bin/adh.mjs target inspect office
+node bin/adh.mjs target configure office --mapping-file <absolute-mapping.json> --dry-run
+node bin/adh.mjs target configure office --mapping-file <absolute-mapping.json>
+```
 
 ```sh
 node bin/adh.mjs target list
@@ -70,7 +83,18 @@ node bin/adh.mjs smoke --target office --workspace demo
 
 把命令中的名称替换成前一步创建的目标和工作区。`smoke` 是主动发起的真实模型验收，只在所选工作区中新建独立子目录；它不属于 `bootstrap` 或 `doctor`。检查真实文件产物，不能只看命令退出码。
 
-MCP 注册后，按 Codex 当前行为重新加载配置或重启会话，再确认 `hub_targets`、`hub_status`、`hub_dispatch`、`hub_send`、`hub_wait`、`hub_messages`、`hub_cancel` 可用。工具不可见时先排查注册和重新加载，不要重复安装模型后端。
+MCP 注册后重新加载，再确认原派工工具以及 `hub_inspect`、`hub_verify`、`hub_artifact` 可用。通过 `verify --job <id>` 核实工作区、初始目录与实际cwd，通过 `artifact --job <id> --path <relative-path>` 检查产物。工具不可见时先排查注册和重新加载，不重复安装模型后端。
+
+已有对话的原生工具列表尚未刷新时，可直接调用同一 MCP，继续完成安装验收：
+
+```sh
+node scripts/call-tool.mjs hub_targets
+node scripts/call-tool.mjs hub_dispatch <任务参数JSON文件>
+```
+
+任务参数使用 `{ "target": "office", "workspace": "demo", "text": "明确的任务书" }`；这里不放认证信息。此入口使用统一 Hub 的目标配置，不调用旧版固定本机的桥接入口。
+
+长任务书可使用 CLI 的 `--text-file "<任务书文件路径>"`，替代 `--text`。验收结束引用发布验证记录，并报告本次安装自己的结果，不能沿用作者机器的结果。
 
 ## 4. 交付给使用者
 

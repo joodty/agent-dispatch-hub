@@ -13,6 +13,7 @@ import {
   HubError,
   run,
   fingerprint,
+  placementChecked,
 } from "../src/core/state.mjs";
 import {
   bootstrap,
@@ -22,6 +23,11 @@ import {
 } from "../src/core/dependencies.mjs";
 import { Hub } from "../src/core/hub.mjs";
 import { pairTarget } from "../src/core/pair.mjs";
+import {
+  preparePairInput,
+  readPairInput,
+  consumePairInput,
+} from "../src/core/pair-input.mjs";
 import {
   discoverLocal,
   installDshCompanions,
@@ -44,12 +50,14 @@ const strings = [
   "job",
   "timeout-ms",
   "from-file",
+  "mapping-file",
+  "path",
 ];
 const options = Object.fromEntries(
   strings.map((key) => [key, { type: "string" }]),
 );
 options.workspace = { type: "string", multiple: true };
-for (const key of ["help", "dry-run", "skip-register"])
+for (const key of ["help", "dry-run", "skip-register", "prepare-input"])
   options[key] = { type: "boolean" };
 let parsed;
 try {
@@ -102,8 +110,9 @@ const taskText = async () =>
   v["text-file"] ? await readFile(resolve(v["text-file"]), "utf8") : v.text;
 async function stdinText() {
   if (process.stdin.isTTY)
-    process.stderr.write(
-      "Paste the authenticated DSH launch URL, then end input (Ctrl+Z Enter on Windows; Ctrl+D on macOS/Linux). Input is not logged by the hub.\n",
+    throw new HubError(
+      "protected-input-required",
+      "Use target pair --prepare-input and --from-file, or pipe protected input through stdin. Interactive terminal input is disabled to avoid echoing the launch URL.",
     );
   let value = "";
   for await (const chunk of process.stdin) {
@@ -129,7 +138,7 @@ async function register() {
 }
 const help = {
   name: "agent-dispatch-hub",
-  version: "0.1.0",
+  version: "0.2.0",
   usage: "node bin/adh.mjs <command> [options]",
   commands: {
     doctor: "Inspect local readiness without dispatch or remote contact",
@@ -141,7 +150,23 @@ const help = {
     "target list": "List names and workspace names; no secrets",
     "target use": "target use office",
     "target pair":
-      "target pair home [--from-file protected-launch-url.txt]; otherwise reads stdin",
+      "target pair home --prepare-input; then --from-file <protected file outside Git>; otherwise reads stdin",
+    "target inspect":
+      "target inspect <name>: read selected companion identity, path style and native workspaces",
+    "target configure":
+      "target configure <name> --mapping-file <JSON containing instance and workspaces> [--dry-run]",
+    "legacy-bind":
+      "--job job-...: explicitly record a legacy session's original instance; no regrouping or backend mutation",
+    verify:
+      "--job job-...: verify workspace affiliation and effective cwd through the selected companion",
+    artifact:
+      "--job job-... --path relative/file.txt: read through the frozen task placement",
+    recover:
+      "--job job-...: recover an unconfirmed placement using its original job ID; sends no prompt",
+    retry:
+      "--job job-... --text-file original-task.txt: confirm an uncertain prompt by original request ID and identical text; never resend",
+    receipt:
+      "--job job-...: read the controller receipt, including retained backend completion after placement drift",
     status: "[--target office]",
     dispatch:
       '--target office --workspace demo --text "task" [--timeout-ms 55000]',
@@ -161,6 +186,13 @@ async function main() {
     print(help);
     return;
   }
+  const expectedCount =
+    p[0] === "target" ? (p[1] === "list" ? 2 : 3) : p[0] === "setup" ? 2 : 1;
+  if (p.length !== expectedCount)
+    throw new HubError(
+      "invalid-arguments",
+      "Unexpected positional arguments. Quote paths containing spaces and consult --help.",
+    );
   if (p[0] === "mcp") {
     const { startMcp } = await import("../src/mcp.mjs");
     await startMcp(home);
@@ -197,7 +229,7 @@ async function main() {
       targets = { ready: false, code: error.code ?? "invalid-config" };
     }
     print({
-      version: "0.1.0",
+      version: "0.2.0",
       node: process.version,
       nodeSupported: Number(process.versions.node.split(".")[0]) >= 22,
       git,
@@ -225,12 +257,112 @@ async function main() {
       print({ defaultTarget: selected.name });
       return;
     }
+    if (p[1] === "inspect") {
+      print(await hub.inspect({ target: p[2] }));
+      return;
+    }
+    if (p[1] === "configure") {
+      const selected = await hub.target(p[2]);
+      if (!v["mapping-file"])
+        throw new HubError(
+          "mapping-file-required",
+          "Provide an explicit placement mapping JSON file; no workspace or scope is inferred from a legacy path.",
+        );
+      const proposal = JSON.parse(
+        await readFile(resolve(v["mapping-file"]), "utf8"),
+      );
+      if (
+        !proposal ||
+        typeof proposal !== "object" ||
+        Array.isArray(proposal) ||
+        Object.keys(proposal).some(
+          (key) => !["instance", "workspaces"].includes(key),
+        )
+      )
+        throw new HubError(
+          "invalid-config",
+          "The mapping file must contain only instance and workspaces; copy those fields from the configuration example.",
+        );
+      const { validateTargetBinding, validateMapping } =
+        await import("../packages/dsh-companion/lib/placement.mjs");
+      placementChecked(() => validateTargetBinding(proposal.instance));
+      if (
+        !proposal.workspaces ||
+        typeof proposal.workspaces !== "object" ||
+        Array.isArray(proposal.workspaces) ||
+        !Object.keys(proposal.workspaces).length
+      )
+        throw new HubError(
+          "invalid-config",
+          "Provide at least one explicit named placement mapping.",
+        );
+      for (const [name, mapping] of Object.entries(proposal.workspaces)) {
+        validName(name, "workspace");
+        placementChecked(() =>
+          validateMapping(mapping, proposal.instance.pathStyle),
+        );
+      }
+      const observed = await hub.inspect({ target: selected.name });
+      if (
+        observed.instance.id !== proposal.instance.id ||
+        observed.instance.pathStyle !== proposal.instance.pathStyle
+      )
+        throw new HubError(
+          "instance-mismatch",
+          "The selected companion identity differs from the proposed mapping.",
+        );
+      if (selected.instance && selected.instance.id !== proposal.instance.id)
+        throw new HubError(
+          "target-conflict",
+          "Use a new target name for a different DSH instance; preserve existing jobs.",
+        );
+      if (v["dry-run"]) {
+        print({
+          dryRun: true,
+          target: selected.name,
+          instance: proposal.instance,
+          workspaces: proposal.workspaces,
+          existingJobsChanged: false,
+        });
+        return;
+      }
+      const { backup } = await import("../src/install/shared.mjs");
+      const backupPath = await backup(join(home, "config.json"));
+      await addTarget(home, selected.name, {
+        ...selected,
+        instance: proposal.instance,
+        workspaces: proposal.workspaces,
+      });
+      print({
+        target: selected.name,
+        version: 2,
+        backupPath,
+        existingJobsChanged: false,
+      });
+      return;
+    }
     if (p[1] === "pair") {
       const name = validName(p[2], "target");
+      const target = await hub.target(name);
+      if (target.connection.kind !== "remote")
+        throw new HubError(
+          "invalid-target",
+          "Pairing is only for a remote target.",
+        );
+      if (v["prepare-input"]) {
+        print(await preparePairInput(home, name));
+        return;
+      }
       const input = v["from-file"]
-        ? await readFile(resolve(v["from-file"]), "utf8")
-        : await stdinText();
-      print(await pairTarget(home, name, input));
+        ? await readPairInput(home, v["from-file"])
+        : null;
+      const result = await pairTarget(
+        home,
+        name,
+        input ? input.text : await stdinText(),
+      );
+      await consumePairInput(input);
+      print(result);
       return;
     }
     throw new HubError(
@@ -299,6 +431,7 @@ async function main() {
       await addTarget(home, targetName, target);
       print({
         target: targetName,
+        placementRequired: true,
         remoteChanges: false,
         pairingRequired: true,
         mcp: await register(),
@@ -319,12 +452,17 @@ async function main() {
         kind: "local",
         connectionFile: join(
           found.dshHome,
-          ".codex-dsh-bridge",
+          "profiles",
+          found.profile,
+          ".agent-dispatch-hub-placement",
           "connection.json",
         ),
       },
       workspaces,
     };
+    if (config.targets[targetName]?.connection.kind === "local")
+      target.connection.connectionFile =
+        config.targets[targetName].connection.connectionFile;
     if (
       config.targets[targetName] &&
       fingerprint(config.targets[targetName]) !== fingerprint(target)
@@ -358,13 +496,45 @@ async function main() {
       mcpNames: [v["mcp-name"] ?? "agent-dispatch-hub"],
       bridgeCheckout: await dependencyPath(home, "bridge"),
       syncCheckout: await dependencyPath(home, "sync"),
+      placementCheckout: join(repoRoot, "packages", "dsh-companion"),
     });
+    if (installed.placementStateDirectory)
+      await privateDirectory(installed.placementStateDirectory);
     await addTarget(home, targetName, target);
-    print({ target: targetName, ...installed, mcp: await register() });
+    print({
+      target: targetName,
+      placementRequired: true,
+      ...installed,
+      mcp: await register(),
+    });
     return;
   }
   if (p[0] === "status") {
     print(await hub.status({ target: v.target }));
+    return;
+  }
+  if (p[0] === "legacy-bind") {
+    print(await hub.bindLegacy({ jobId: v.job, target: v.target }));
+    return;
+  }
+  if (p[0] === "recover") {
+    print(await hub.recover({ jobId: v.job }));
+    return;
+  }
+  if (p[0] === "retry") {
+    print(await hub.retryPrompt({ jobId: v.job, text: await taskText() }));
+    return;
+  }
+  if (p[0] === "receipt") {
+    print(await hub.receipt({ jobId: v.job }));
+    return;
+  }
+  if (p[0] === "verify") {
+    print(await hub.verify({ jobId: v.job }));
+    return;
+  }
+  if (p[0] === "artifact") {
+    print(await hub.readArtifact({ jobId: v.job, path: v.path }));
     return;
   }
   if (p[0] === "dispatch") {
